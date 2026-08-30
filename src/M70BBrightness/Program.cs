@@ -373,8 +373,10 @@ internal sealed class BrightnessPopup : Form
         try
         {
             await _session.WakeBridgeAsync();
-            if (_connected is not true)
+            if (!_session.IsBridgeConnected)
                 throw new TimeoutException("电视端应用已启动，但没有连回电脑。请确认电视和电脑在同一局域网。");
+            _connected = true;
+            await BeginOpenSessionAsync();
         }
         catch (Exception ex)
         {
@@ -973,6 +975,7 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
     private readonly BrightnessBridgeServer _bridge;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private ClientWebSocket? _socket;
+    private int _initialized;
 
     public SamsungBrightnessSession(
         string host,
@@ -987,7 +990,8 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
     }
 
     public int CurrentBrightness { get; private set; }
-    public bool IsOpen => _bridge.IsConnected;
+    public bool IsBridgeConnected => _bridge.IsConnected;
+    public bool IsOpen => _bridge.IsConnected && Volatile.Read(ref _initialized) == 1;
     public event Action<string, string>? ProgressChanged;
 
     public async Task WakeBridgeAsync()
@@ -1142,12 +1146,13 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         await _gate.WaitAsync();
         try
         {
-            if (!IsOpen)
+            if (!_bridge.IsConnected)
                 throw new InvalidOperationException("电视亮度桥接器尚未连接。请先在电视上启动桥接应用。");
 
             Report("启动中，正在读取显示器背光…", "GET_BACKLIGHT — 读取绝对值");
             CurrentBrightness = await _bridge.GetBrightnessAsync();
             LocalState.SaveBrightness(CurrentBrightness);
+            Volatile.Write(ref _initialized, 1);
         }
         finally
         {
@@ -1208,6 +1213,7 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
 
     public async Task AbortAsync()
     {
+        Volatile.Write(ref _initialized, 0);
         await Task.CompletedTask;
     }
 
