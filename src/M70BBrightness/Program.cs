@@ -28,8 +28,8 @@ internal static class Program
         if (!createdNew)
         {
             MessageBox.Show(
-                "M70B 亮度调节已经在系统托盘中运行。",
-                "M70B 亮度调节",
+                "Samsung 显示器控制已经在系统托盘中运行。",
+                "Samsung 显示器控制",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return;
@@ -54,8 +54,8 @@ internal static class Program
         catch (Exception ex)
         {
             MessageBox.Show(
-                $"无法启动 M70B 亮度调节：\n{ex.Message}",
-                "M70B 亮度调节",
+                $"无法启动 Samsung 显示器控制：\n{ex.Message}",
+                "Samsung 显示器控制",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
@@ -111,7 +111,7 @@ internal static class HostPrompt
             string host = input.Text.Trim();
             if (IPAddress.TryParse(host, out _) || Uri.CheckHostName(host) != UriHostNameType.Unknown)
                 return host;
-            MessageBox.Show("请输入有效的 IP 地址或主机名。", "M70B 亮度调节", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show("请输入有效的 IP 地址或主机名。", "Samsung 显示器控制", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         return null;
     }
@@ -119,7 +119,7 @@ internal static class HostPrompt
 
 internal sealed class TrayContext : ApplicationContext
 {
-    private readonly BrightnessPopup _popup;
+    private readonly MonitorControlPopup _popup;
     private readonly NotifyIcon _trayIcon;
     private readonly Icon _appIcon;
     private readonly Icon _offlineIcon;
@@ -136,18 +136,19 @@ internal sealed class TrayContext : ApplicationContext
         var session = new SamsungBrightnessSession(host, token, LocalState.LoadBrightness(), _bridge);
         _connectivity = new MonitorConnectivity(_bridge);
         _hdmiPresence = new HdmiMonitorPresence();
-        _popup = new BrightnessPopup(session, _connectivity, host);
+        _popup = new MonitorControlPopup(session, _connectivity, host);
         _appIcon = (Icon)(Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application).Clone();
         _offlineIcon = IconVisuals.CreateGrayscale(_appIcon);
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add("打开亮度调节", null, (_, _) => _popup.OpenNearCursor());
+        menu.Items.Add("打开显示器控制", null, (_, _) => _popup.OpenNearCursor());
+        menu.Items.Add("恢复 HDMI 画面", null, async (_, _) => await RecoverDisplayAsync());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出", null, async (_, _) => await ExitAsync());
 
         _trayIcon = new NotifyIcon
         {
-            Text = "Samsung M70B 亮度调节",
+            Text = "Samsung 显示器控制",
             Icon = _offlineIcon,
             ContextMenuStrip = menu,
             Visible = true
@@ -158,8 +159,8 @@ internal sealed class TrayContext : ApplicationContext
                 _popup.OpenNearCursor();
         };
 
-        _trayIcon.BalloonTipTitle = "M70B 亮度调节已启动";
-        _trayIcon.BalloonTipText = "左键单击此图标即可打开亮度滑块。";
+        _trayIcon.BalloonTipTitle = "Samsung 显示器控制已启动";
+        _trayIcon.BalloonTipText = "左键单击电视图标即可打开控制面板。";
         _trayIcon.ShowBalloonTip(3000);
         _ = _popup.Handle;
         _connectivity.StatusChanged += TrayConnectivity_StatusChanged;
@@ -201,10 +202,10 @@ internal sealed class TrayContext : ApplicationContext
             bool connected = _bridgeConnected && _hdmiConnected;
             _trayIcon.Icon = connected ? _appIcon : _offlineIcon;
             _trayIcon.Text = connected
-                ? "Samsung 显示器亮度 · 已连接"
+                ? "Samsung 显示器控制 · 已连接"
                 : !_hdmiConnected
-                    ? "Samsung 显示器亮度 · HDMI 未连接"
-                    : "Samsung 显示器亮度 · 桥接器已断开";
+                    ? "Samsung 显示器控制 · HDMI 未连接"
+                    : "Samsung 显示器控制 · 桥接器已断开";
         }
 
         if (_popup.IsHandleCreated && _popup.InvokeRequired)
@@ -214,6 +215,22 @@ internal sealed class TrayContext : ApplicationContext
         else
         {
             Update();
+        }
+    }
+
+    private async Task RecoverDisplayAsync()
+    {
+        try
+        {
+            await _bridge.RecoverDisplayAsync();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(
+                $"无法恢复 HDMI 画面：\n{error.Message}",
+                "Samsung 显示器控制",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
         }
     }
 
@@ -1095,6 +1112,30 @@ internal static class ModernDrawing
     }
 }
 
+internal sealed record MonitorSettingCapability(
+    string Key,
+    string Kind,
+    int? Minimum,
+    int? Maximum,
+    IReadOnlyList<string> Options,
+    bool Writable,
+    bool Experimental = false,
+    bool RequiresConfirmation = false);
+
+internal sealed class MonitorSettingsSnapshot
+{
+    public MonitorSettingsSnapshot(
+        IReadOnlyDictionary<string, MonitorSettingCapability> capabilities,
+        IReadOnlyDictionary<string, object?> values)
+    {
+        Capabilities = capabilities;
+        Values = values;
+    }
+
+    public IReadOnlyDictionary<string, MonitorSettingCapability> Capabilities { get; }
+    public IReadOnlyDictionary<string, object?> Values { get; }
+}
+
 internal sealed class SamsungBrightnessSession : IAsyncDisposable
 {
     private const string AppName = "Codex M70B Control";
@@ -1307,6 +1348,91 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         }
     }
 
+    public async Task<MonitorSettingsSnapshot> GetSettingsSnapshotAsync()
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            if (!IsOpen)
+                throw new InvalidOperationException("电视亮度桥接器已断开。");
+
+            Report("正在读取显示器可调项…", "GET_CAPABILITIES + GET_SETTINGS");
+            try
+            {
+                JsonElement capabilityResponse = await _bridge.GetCapabilitiesAsync();
+                JsonElement settingsResponse = await _bridge.GetSettingsAsync();
+                Dictionary<string, MonitorSettingCapability> capabilities =
+                    ParseCapabilities(capabilityResponse);
+                Dictionary<string, object?> values = ParseSettings(settingsResponse);
+
+                if (values.TryGetValue("backlight", out object? backlightValue) &&
+                    TryConvertInt(backlightValue, out int backlight))
+                {
+                    CurrentBrightness = Math.Clamp(backlight, 0, 50);
+                    LocalState.SaveBrightness(CurrentBrightness);
+                }
+                return new MonitorSettingsSnapshot(capabilities, values);
+            }
+            catch (InvalidOperationException error)
+                when (error.Message.Contains("unsupported", StringComparison.OrdinalIgnoreCase))
+            {
+                CurrentBrightness = await _bridge.GetBrightnessAsync();
+                LocalState.SaveBrightness(CurrentBrightness);
+                var capability = new MonitorSettingCapability(
+                    "backlight", "range", 0, 50, Array.Empty<string>(), true);
+                return new MonitorSettingsSnapshot(
+                    new Dictionary<string, MonitorSettingCapability>
+                    {
+                        ["backlight"] = capability
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["backlight"] = CurrentBrightness
+                    });
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<object?> SetMonitorSettingAsync(
+        string key,
+        object value,
+        bool confirmed = false)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            if (!IsOpen)
+                throw new InvalidOperationException("电视亮度桥接器已断开。");
+
+            Report("调节中，正在给电视发送命令…", $"SET_SETTING {key} = {value}");
+            if (key == "backlight" && TryConvertInt(value, out int legacyBacklight))
+            {
+                CurrentBrightness = await _bridge.SetBrightnessAsync(legacyBacklight);
+                LocalState.SaveBrightness(CurrentBrightness);
+                return CurrentBrightness;
+            }
+
+            JsonElement response = await _bridge.SetSettingAsync(key, value, confirmed);
+            if (!response.TryGetProperty("value", out JsonElement responseValue))
+                throw new InvalidDataException("电视返回的设置响应无效。");
+            object? actual = ConvertJsonValue(responseValue);
+            if (key == "backlight" && TryConvertInt(actual, out int backlight))
+            {
+                CurrentBrightness = Math.Clamp(backlight, 0, 50);
+                LocalState.SaveBrightness(CurrentBrightness);
+            }
+            return actual;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task ResetMinimumAsync()
     {
         await ResetAsync(0);
@@ -1362,6 +1488,104 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
 
     private void Report(string status, string command)
         => ProgressChanged?.Invoke(status, command);
+
+    private static Dictionary<string, MonitorSettingCapability> ParseCapabilities(
+        JsonElement response)
+    {
+        if (!response.TryGetProperty("settings", out JsonElement settings) ||
+            settings.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("电视未返回有效的可调项列表。");
+
+        var result = new Dictionary<string, MonitorSettingCapability>(StringComparer.Ordinal);
+        foreach (JsonElement item in settings.EnumerateArray())
+        {
+            string? key = item.TryGetProperty("id", out JsonElement idElement)
+                ? idElement.GetString()
+                : null;
+            if (string.IsNullOrWhiteSpace(key))
+                continue;
+
+            string type = item.TryGetProperty("type", out JsonElement typeElement)
+                ? typeElement.GetString() ?? "integer"
+                : "integer";
+            string kind = type switch
+            {
+                "boolean" => "toggle",
+                "dynamic" or "enum" => "choice",
+                _ => "range"
+            };
+            int? minimum = item.TryGetProperty("min", out JsonElement minimumElement) &&
+                           minimumElement.TryGetInt32(out int min)
+                ? min
+                : null;
+            int? maximum = item.TryGetProperty("max", out JsonElement maximumElement) &&
+                           maximumElement.TryGetInt32(out int max)
+                ? max
+                : null;
+            bool writable = item.TryGetProperty("writable", out JsonElement writableElement) &&
+                            writableElement.ValueKind == JsonValueKind.True;
+            bool experimental = item.TryGetProperty("experimental", out JsonElement experimentalElement) &&
+                                experimentalElement.ValueKind == JsonValueKind.True;
+            bool requiresConfirmation = item.TryGetProperty("confirmation", out JsonElement confirmationElement) &&
+                                        confirmationElement.ValueKind == JsonValueKind.True;
+            string[] options = item.TryGetProperty("values", out JsonElement valuesElement) &&
+                               valuesElement.ValueKind == JsonValueKind.Array
+                ? valuesElement.EnumerateArray()
+                    .Where(value => value.ValueKind == JsonValueKind.String)
+                    .Select(value => value.GetString())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Cast<string>()
+                    .ToArray()
+                : Array.Empty<string>();
+            result[key] = new MonitorSettingCapability(
+                key, kind, minimum, maximum, options, writable, experimental,
+                requiresConfirmation);
+        }
+        return result;
+    }
+
+    private static Dictionary<string, object?> ParseSettings(JsonElement response)
+    {
+        if (!response.TryGetProperty("values", out JsonElement values) ||
+            values.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("电视未返回有效的设置值。");
+
+        return values.EnumerateObject().ToDictionary(
+            property => property.Name,
+            property => ConvertJsonValue(property.Value),
+            StringComparer.Ordinal);
+    }
+
+    private static object? ConvertJsonValue(JsonElement value)
+        => value.ValueKind switch
+        {
+            JsonValueKind.Number when value.TryGetInt32(out int number) => number,
+            JsonValueKind.Number => value.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Null => null,
+            _ => value.Clone()
+        };
+
+    private static bool TryConvertInt(object? value, out int number)
+    {
+        switch (value)
+        {
+            case int integer:
+                number = integer;
+                return true;
+            case long longInteger when longInteger is >= int.MinValue and <= int.MaxValue:
+                number = (int)longInteger;
+                return true;
+            case string text when int.TryParse(text, out int parsed):
+                number = parsed;
+                return true;
+            default:
+                number = 0;
+                return false;
+        }
+    }
 
     private void AbortSocket()
     {
@@ -1458,7 +1682,7 @@ internal sealed class BrightnessBridgeServer : IAsyncDisposable
     private readonly CancellationTokenSource _shutdown = new();
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly object _socketLock = new();
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<int>> _pending = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new();
     private Task? _acceptLoop;
     private WebSocket? _socket;
     private int _connected;
@@ -1482,11 +1706,43 @@ internal sealed class BrightnessBridgeServer : IAsyncDisposable
         _acceptLoop = AcceptLoopAsync();
     }
 
-    public Task<int> GetBrightnessAsync()
-        => SendRequestAsync("get", null, TimeSpan.FromSeconds(5));
+    public async Task<int> GetBrightnessAsync()
+    {
+        JsonElement response = await SendRequestAsync("get", null, TimeSpan.FromSeconds(5));
+        return ReadIntegerValue(response, 0, 50);
+    }
 
-    public Task<int> SetBrightnessAsync(int value)
-        => SendRequestAsync("set", Math.Clamp(value, 0, 50), TimeSpan.FromSeconds(5));
+    public async Task<int> SetBrightnessAsync(int value)
+    {
+        JsonElement response = await SendRequestAsync(
+            "set",
+            new Dictionary<string, object?> { ["value"] = Math.Clamp(value, 0, 50) },
+            TimeSpan.FromSeconds(5));
+        return ReadIntegerValue(response, 0, 50);
+    }
+
+    public Task<JsonElement> GetCapabilitiesAsync()
+        => SendRequestAsync("capabilities", null, TimeSpan.FromSeconds(8));
+
+    public Task<JsonElement> GetSettingsAsync()
+        => SendRequestAsync("get_settings", null, TimeSpan.FromSeconds(8));
+
+    public Task<JsonElement> RecoverDisplayAsync()
+        => SendRequestAsync("recover_display", null, TimeSpan.FromSeconds(12));
+
+    public Task<JsonElement> SetSettingAsync(
+        string key,
+        object value,
+        bool confirmed = false)
+        => SendRequestAsync(
+            "set_setting",
+            new Dictionary<string, object?>
+            {
+                ["setting"] = key,
+                ["value"] = value,
+                ["confirmed"] = confirmed
+            },
+            TimeSpan.FromSeconds(12));
 
     public async Task RequestExitAsync()
     {
@@ -1628,22 +1884,29 @@ internal sealed class BrightnessBridgeServer : IAsyncDisposable
                     value = Math.Clamp(value, 0, 50);
                     Volatile.Write(ref _currentBrightness, value);
                     SetConnected(true);
-                    if (id is not null && _pending.TryRemove(id, out TaskCompletionSource<int>? completion))
-                        completion.TrySetResult(value);
                 }
             }
-            else if (operation == "error" && id is not null &&
-                     _pending.TryRemove(id, out TaskCompletionSource<int>? completion))
+
+            if (operation == "error" && id is not null &&
+                _pending.TryRemove(id, out TaskCompletionSource<JsonElement>? failedCompletion))
             {
                 string message = root.TryGetProperty("message", out JsonElement messageElement)
                     ? messageElement.GetString() ?? "电视返回未知错误。"
                     : "电视返回未知错误。";
-                completion.TrySetException(new InvalidOperationException(message));
+                failedCompletion.TrySetException(new InvalidOperationException(message));
+            }
+            else if (id is not null &&
+                     _pending.TryRemove(id, out TaskCompletionSource<JsonElement>? completion))
+            {
+                completion.TrySetResult(root.Clone());
             }
         }
     }
 
-    private async Task<int> SendRequestAsync(string operation, int? value, TimeSpan timeout)
+    private async Task<JsonElement> SendRequestAsync(
+        string operation,
+        IReadOnlyDictionary<string, object?>? payload,
+        TimeSpan timeout)
     {
         WebSocket websocket;
         lock (_socketLock)
@@ -1654,13 +1917,21 @@ internal sealed class BrightnessBridgeServer : IAsyncDisposable
         }
 
         string id = Guid.NewGuid().ToString("N");
-        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!_pending.TryAdd(id, completion))
-            throw new InvalidOperationException("无法创建亮度命令。请重试。");
+            throw new InvalidOperationException("无法创建显示器命令。请重试。");
 
-        string json = value.HasValue
-            ? JsonSerializer.Serialize(new { op = operation, id, value = value.Value })
-            : JsonSerializer.Serialize(new { op = operation, id });
+        var message = new Dictionary<string, object?>
+        {
+            ["op"] = operation,
+            ["id"] = id
+        };
+        if (payload is not null)
+        {
+            foreach ((string key, object? value) in payload)
+                message[key] = value;
+        }
+        string json = JsonSerializer.Serialize(message);
         byte[] data = Encoding.UTF8.GetBytes(json);
 
         try
@@ -1703,9 +1974,17 @@ internal sealed class BrightnessBridgeServer : IAsyncDisposable
             ConnectionChanged?.Invoke(connected);
     }
 
+    private static int ReadIntegerValue(JsonElement response, int minimum, int maximum)
+    {
+        if (!response.TryGetProperty("value", out JsonElement valueElement) ||
+            !valueElement.TryGetInt32(out int value))
+            throw new InvalidDataException("电视返回的数值响应无效。");
+        return Math.Clamp(value, minimum, maximum);
+    }
+
     private void FailPending(Exception exception)
     {
-        foreach ((string id, TaskCompletionSource<int> completion) in _pending)
+        foreach ((string id, TaskCompletionSource<JsonElement> completion) in _pending)
         {
             if (_pending.TryRemove(id, out _))
                 completion.TrySetException(exception);
