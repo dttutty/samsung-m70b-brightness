@@ -202,6 +202,7 @@ internal sealed class BrightnessPopup : Form
     private readonly ModernCloseButton _closeButton = new();
     private readonly ProgressBar _progressBar = new();
     private readonly System.Windows.Forms.Timer _sliderTimer = new();
+    private readonly System.Windows.Forms.Timer _closeTimer = new();
     private bool _opening;
     private bool _waking;
     private bool _closing;
@@ -258,7 +259,7 @@ internal sealed class BrightnessPopup : Form
 
         _closeButton.Location = new Point(358, 12);
         _closeButton.Size = new Size(28, 28);
-        _closeButton.Click += async (_, _) => await HideAndCloseSessionAsync();
+        _closeButton.Click += (_, _) => BeginHideAndCloseSession();
 
         _slider.Minimum = 0;
         _slider.Maximum = 50;
@@ -316,6 +317,16 @@ internal sealed class BrightnessPopup : Form
             await ApplyPendingSliderAsync();
         };
 
+        _closeTimer.Interval = 250;
+        _closeTimer.Tick += (_, _) =>
+        {
+            _closeTimer.Stop();
+            Hide();
+            SetBusyDisplay(false);
+            _closeButton.Enabled = true;
+            _closing = false;
+        };
+
         _session.ProgressChanged += Session_ProgressChanged;
 
         Controls.AddRange([
@@ -352,7 +363,12 @@ internal sealed class BrightnessPopup : Form
         Activate();
 
         if (_connected is true)
-            await BeginOpenSessionAsync();
+        {
+            if (_session.IsOpen)
+                ShowReadyState();
+            else
+                await BeginOpenSessionAsync();
+        }
         else
             await WakeBridgeAsync();
     }
@@ -412,14 +428,7 @@ internal sealed class BrightnessPopup : Form
         {
             await _session.OpenAsync();
             if (Visible && _connected is true && _session.IsOpen)
-            {
-                SyncSliderToSession();
-                SetTransitionLayout(false);
-                SetControlsEnabled(true);
-                SetBusyDisplay(false);
-                _statusLabel.Text = "拖动滑块即可调节；点击右上角 × 关闭";
-                _commandLabel.Text = "命令：READY — 绝对背光通道已就绪";
-            }
+                ShowReadyState();
         }
         catch (Exception ex)
         {
@@ -458,8 +467,13 @@ internal sealed class BrightnessPopup : Form
 
             if (!connected)
                 _ = HandleDisconnectedAsync();
-            else if (Visible && !_session.IsOpen)
-                _ = BeginOpenSessionAsync();
+            else if (Visible)
+            {
+                if (_session.IsOpen)
+                    ShowReadyState();
+                else
+                    _ = BeginOpenSessionAsync();
+            }
         }
 
         if (IsHandleCreated && InvokeRequired)
@@ -579,7 +593,7 @@ internal sealed class BrightnessPopup : Form
         }
     }
 
-    private async Task HideAndCloseSessionAsync()
+    private void BeginHideAndCloseSession()
     {
         if (_closing)
             return;
@@ -592,22 +606,13 @@ internal sealed class BrightnessPopup : Form
         SetBusyDisplay(true);
         _statusLabel.Text = "正在收起亮度窗口…";
         _commandLabel.Text = "命令：HIDE — 保持绝对背光通道在线";
-        try
-        {
-            await _session.CloseAsync();
-        }
-        finally
-        {
-            Hide();
-            SetBusyDisplay(false);
-            _closeButton.Enabled = true;
-            _closing = false;
-        }
+        _closeTimer.Start();
     }
 
     public async Task ShutdownAsync()
     {
         _sliderTimer.Stop();
+        _closeTimer.Stop();
         Hide();
         await _session.CloseAsync();
         await _session.DisposeAsync();
@@ -619,6 +624,18 @@ internal sealed class BrightnessPopup : Form
         _slider.Value = _session.CurrentBrightness;
         _valueLabel.Text = $"{_session.CurrentBrightness} / 50";
         _ignoreSlider = false;
+    }
+
+    private void ShowReadyState()
+    {
+        SyncSliderToSession();
+        SetTransitionLayout(false);
+        SetControlsEnabled(true);
+        SetBusyDisplay(false);
+        _subtitleLabel.Text = "Samsung Tizen  ·  绝对背光已连接";
+        _subtitleLabel.ForeColor = Color.FromArgb(113, 210, 143);
+        _statusLabel.Text = "拖动滑块即可调节；点击右上角 × 关闭";
+        _commandLabel.Text = "命令：READY — 绝对背光通道已就绪";
     }
 
     private void SetControlsEnabled(bool enabled)
