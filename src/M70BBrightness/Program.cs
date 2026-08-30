@@ -1,6 +1,8 @@
 using System.Net.WebSockets;
 using System.Net;
+using System.Net.Sockets;
 using System.ComponentModel;
+using System.Collections.Concurrent;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -14,7 +16,7 @@ internal static class Program
     private static Mutex? _singleInstance;
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
 
@@ -43,21 +45,10 @@ internal static class Program
                 LocalState.SaveHost(host);
             }
 
-            string? token = LocalState.TryLoadToken();
-            if (token is null)
-            {
-                if (MessageBox.Show(
-                        "首次使用需要与显示器配对。\n\n点击“确定”后，请在 Samsung M70B 屏幕上选择“允许”。",
-                        "M70B 亮度调节",
-                        MessageBoxButtons.OKCancel,
-                        MessageBoxIcon.Information) != DialogResult.OK)
-                    return;
-
-                token = SamsungBrightnessSession.PairAsync(host).GetAwaiter().GetResult();
-                LocalState.SaveToken(token);
-            }
-
-            Application.Run(new TrayContext(host, token));
+            string token = LocalState.TryLoadToken() ?? string.Empty;
+            bool openAtStartup = args.Any(arg =>
+                string.Equals(arg, "--open", StringComparison.OrdinalIgnoreCase));
+            Application.Run(new TrayContext(host, token, openAtStartup));
         }
         catch (Exception ex)
         {
@@ -130,12 +121,16 @@ internal sealed class TrayContext : ApplicationContext
     private readonly BrightnessPopup _popup;
     private readonly NotifyIcon _trayIcon;
     private readonly Icon _appIcon;
+    private readonly MonitorConnectivity _connectivity;
+    private readonly BrightnessBridgeServer _bridge;
     private bool _exiting;
 
-    public TrayContext(string host, string token)
+    public TrayContext(string host, string token, bool openAtStartup = false)
     {
-        var session = new SamsungBrightnessSession(host, token, LocalState.LoadBrightness());
-        _popup = new BrightnessPopup(session);
+        _bridge = new BrightnessBridgeServer(host, 8765);
+        var session = new SamsungBrightnessSession(host, token, LocalState.LoadBrightness(), _bridge);
+        _connectivity = new MonitorConnectivity(_bridge);
+        _popup = new BrightnessPopup(session, _connectivity, host);
         _appIcon = (Icon)(Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application).Clone();
 
         var menu = new ContextMenuStrip();
@@ -159,6 +154,19 @@ internal sealed class TrayContext : ApplicationContext
         _trayIcon.BalloonTipTitle = "M70B 亮度调节已启动";
         _trayIcon.BalloonTipText = "左键单击此图标即可打开亮度滑块。";
         _trayIcon.ShowBalloonTip(3000);
+        _ = _popup.Handle;
+        _bridge.Start();
+        _connectivity.Start();
+        if (openAtStartup)
+        {
+            EventHandler? openWhenReady = null;
+            openWhenReady = (_, _) =>
+            {
+                Application.Idle -= openWhenReady;
+                _popup.OpenNearCursor();
+            };
+            Application.Idle += openWhenReady;
+        }
     }
 
     private async Task ExitAsync()
@@ -168,6 +176,9 @@ internal sealed class TrayContext : ApplicationContext
 
         _exiting = true;
         await _popup.ShutdownAsync();
+        await _bridge.RequestExitAsync();
+        await _connectivity.DisposeAsync();
+        await _bridge.DisposeAsync();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         _appIcon.Dispose();
@@ -179,8 +190,11 @@ internal sealed class TrayContext : ApplicationContext
 internal sealed class BrightnessPopup : Form
 {
     private readonly SamsungBrightnessSession _session;
+    private readonly MonitorConnectivity _connectivity;
+    private readonly string _host;
     private readonly ModernBrightnessSlider _slider = new();
     private readonly Label _valueLabel = new();
+    private readonly Label _subtitleLabel = new();
     private readonly Label _statusLabel = new();
     private readonly Label _commandLabel = new();
     private readonly ModernTileButton _minimumButton = new();
@@ -189,13 +203,20 @@ internal sealed class BrightnessPopup : Form
     private readonly ProgressBar _progressBar = new();
     private readonly System.Windows.Forms.Timer _sliderTimer = new();
     private bool _opening;
+    private bool _waking;
     private bool _closing;
     private bool _applying;
     private bool _ignoreSlider;
+    private bool? _connected;
 
-    public BrightnessPopup(SamsungBrightnessSession session)
+    public BrightnessPopup(
+        SamsungBrightnessSession session,
+        MonitorConnectivity connectivity,
+        string host)
     {
         _session = session;
+        _connectivity = connectivity;
+        _host = host;
 
         Text = "Samsung M70B 亮度";
         ClientSize = new Size(400, 260);
@@ -220,15 +241,12 @@ internal sealed class BrightnessPopup : Form
             Location = new Point(20, 16)
         };
 
-        var subtitle = new Label
-        {
-            Text = "Samsung M70B  ·  局域网控制",
-            ForeColor = Color.FromArgb(174, 174, 174),
-            BackColor = Color.Transparent,
-            Font = new Font(Font.FontFamily, 8.5F),
-            AutoSize = true,
-            Location = new Point(21, 45)
-        };
+        _subtitleLabel.Text = "Samsung Tizen  ·  正在检测显示器…";
+        _subtitleLabel.ForeColor = Color.FromArgb(174, 174, 174);
+        _subtitleLabel.BackColor = Color.Transparent;
+        _subtitleLabel.Font = new Font(Font.FontFamily, 8.5F);
+        _subtitleLabel.AutoSize = true;
+        _subtitleLabel.Location = new Point(21, 45);
 
         _valueLabel.Text = $"{_session.CurrentBrightness} / 50";
         _valueLabel.ForeColor = Color.White;
@@ -302,7 +320,7 @@ internal sealed class BrightnessPopup : Form
 
         Controls.AddRange([
             title,
-            subtitle,
+            _subtitleLabel,
             _closeButton,
             _valueLabel,
             _slider,
@@ -312,6 +330,8 @@ internal sealed class BrightnessPopup : Form
             _commandLabel,
             _progressBar
         ]);
+
+        _connectivity.StatusChanged += Connectivity_StatusChanged;
     }
 
     public async void OpenNearCursor()
@@ -319,6 +339,8 @@ internal sealed class BrightnessPopup : Form
         if (Visible)
         {
             Activate();
+            if (_connected is not true)
+                await WakeBridgeAsync();
             return;
         }
 
@@ -326,42 +348,152 @@ internal sealed class BrightnessPopup : Form
         Rectangle area = screen.WorkingArea;
         Location = new Point(area.Right - Width - 4, area.Bottom - Height - 4);
         SyncSliderToSession();
-        SetTransitionLayout(true);
-        SetControlsEnabled(false);
-        SetBusyDisplay(true);
-        _statusLabel.Text = "启动中，正在给电视发送命令…";
-        _commandLabel.Text = "命令：CONNECT — 建立局域网连接";
         Show();
         Activate();
 
-        if (_opening)
+        if (_connected is true)
+            await BeginOpenSessionAsync();
+        else
+            await WakeBridgeAsync();
+    }
+
+    private async Task WakeBridgeAsync()
+    {
+        if (_waking || _closing || !Visible || _connected is true)
             return;
 
+        _waking = true;
+        SetTransitionLayout(true);
+        SetControlsEnabled(false);
+        SetBusyDisplay(true);
+        _subtitleLabel.Text = "Samsung Tizen  ·  正在启动桥接器";
+        _subtitleLabel.ForeColor = Color.FromArgb(174, 174, 174);
+        _statusLabel.Text = "正在让显示器打开 HDMI 亮度桥接器…";
+        _commandLabel.Text = "命令：LAUNCH_APP — q8YFGkFK1p.M70BProbe";
+        try
+        {
+            await _session.WakeBridgeAsync();
+            if (_connected is not true)
+                throw new TimeoutException("电视端应用已启动，但没有连回电脑。请确认电视和电脑在同一局域网。");
+        }
+        catch (Exception ex)
+        {
+            if (Visible && !_closing && _connected is not true)
+            {
+                SetTransitionLayout(true);
+                SetControlsEnabled(false);
+                SetBusyDisplay(false);
+                _subtitleLabel.Text = "Samsung Tizen  ·  自动启动失败";
+                _subtitleLabel.ForeColor = Color.FromArgb(255, 128, 128);
+                _statusLabel.Text = "无法自动启动电视端桥接器";
+                _commandLabel.Text = $"错误：{ex.Message}";
+            }
+        }
+        finally
+        {
+            _waking = false;
+        }
+    }
+
+    private async Task BeginOpenSessionAsync()
+    {
+        if (_opening || _closing || !Visible || _connected is not true || _session.IsOpen)
+            return;
+
+        SetTransitionLayout(true);
+        SetControlsEnabled(false);
+        SetBusyDisplay(true);
+        _statusLabel.Text = "启动中，正在给显示器发送命令…";
+        _commandLabel.Text = "命令：CONNECT — 建立局域网连接";
         _opening = true;
         try
         {
             await _session.OpenAsync();
-            if (Visible)
+            if (Visible && _connected is true && _session.IsOpen)
             {
+                SyncSliderToSession();
                 SetTransitionLayout(false);
                 SetControlsEnabled(true);
                 SetBusyDisplay(false);
                 _statusLabel.Text = "拖动滑块即可调节；点击右上角 × 关闭";
-                _commandLabel.Text = "命令：READY — 亮度界面已就绪";
+                _commandLabel.Text = "命令：READY — 绝对背光通道已就绪";
             }
         }
         catch (Exception ex)
         {
-            Hide();
-            MessageBox.Show(
-                $"无法打开显示器亮度界面：\n{ex.Message}",
-                "M70B 亮度调节",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            if (Visible && !_closing)
+            {
+                SetTransitionLayout(true);
+                SetControlsEnabled(false);
+                SetBusyDisplay(false);
+                _statusLabel.Text = "无法连接或打开显示器亮度界面";
+                _commandLabel.Text = $"错误：{ex.Message}";
+            }
         }
         finally
         {
             _opening = false;
+        }
+    }
+
+    private void Connectivity_StatusChanged(bool connected)
+    {
+        void Update()
+        {
+            if (IsDisposed)
+                return;
+
+            _connected = connected;
+            _subtitleLabel.Text = connected
+                ? "Samsung Tizen  ·  绝对背光已连接"
+                : "Samsung Tizen  ·  桥接器已断开";
+            _subtitleLabel.ForeColor = connected
+                ? Color.FromArgb(113, 210, 143)
+                : Color.FromArgb(255, 128, 128);
+
+            if (_closing)
+                return;
+
+            if (!connected)
+                _ = HandleDisconnectedAsync();
+            else if (Visible && !_session.IsOpen)
+                _ = BeginOpenSessionAsync();
+        }
+
+        if (IsHandleCreated && InvokeRequired)
+            BeginInvoke(Update);
+        else
+            Update();
+    }
+
+    private async Task HandleDisconnectedAsync()
+    {
+        if (Visible)
+        {
+            SetTransitionLayout(true);
+            SetControlsEnabled(false);
+            SetBusyDisplay(false);
+            _statusLabel.Text = "显示器已断开，亮度控制不可用";
+            _commandLabel.Text = $"OFFLINE — 等待 {_host} 连接本机 :8765";
+        }
+        await _session.AbortAsync();
+    }
+
+    private void ShowConnectivityState()
+    {
+        SetTransitionLayout(true);
+        SetControlsEnabled(false);
+        if (_connected is null)
+        {
+            SetBusyDisplay(true);
+            _statusLabel.Text = "正在检测显示器连接状态…";
+            _commandLabel.Text = "命令：LISTEN — 等待电视桥接器连接 :8765";
+        }
+        else
+        {
+            SetBusyDisplay(false);
+            _statusLabel.Text = "显示器已断开，亮度控制不可用";
+            _commandLabel.Text = $"OFFLINE — 等待 {_host} 连接本机 :8765";
         }
     }
 
@@ -371,13 +503,24 @@ internal sealed class BrightnessPopup : Form
             return;
 
         _applying = true;
-        SetControlsEnabled(false);
+        // Keep the slider interactive while a command is in flight.  Disabling it
+        // during a drag releases mouse capture and makes the popup appear frozen.
+        _slider.Enabled = true;
+        _minimumButton.Enabled = false;
+        _maximumButton.Enabled = false;
+        UseWaitCursor = false;
         SetBusyDisplay(true);
         try
         {
+            int lastTarget = -1;
             while (Visible && _slider.Value != _session.CurrentBrightness)
             {
                 int target = _slider.Value;
+                // A picture mode or Eco setting can clamp a requested value.  Do
+                // not spin forever when the value read back from the TV differs.
+                if (target == lastTarget)
+                    break;
+                lastTarget = target;
                 _statusLabel.Text = $"正在调节到 {target}…";
                 await _session.MoveToAsync(target);
             }
@@ -392,7 +535,7 @@ internal sealed class BrightnessPopup : Form
         finally
         {
             _applying = false;
-            if (Visible)
+            if (Visible && _connected is true && _session.IsOpen)
             {
                 SetControlsEnabled(true);
                 SetBusyDisplay(false);
@@ -417,8 +560,8 @@ internal sealed class BrightnessPopup : Form
             SyncSliderToSession();
             _statusLabel.Text = "已同步当前亮度；拖动滑块即可调节";
             _commandLabel.Text = minimum
-                ? "命令：KEY_LEFT × 50 — 当前已记为 0"
-                : "命令：KEY_RIGHT × 50 — 当前已记为 50";
+                ? "命令：SET_BACKLIGHT 0 — 绝对最小亮度"
+                : "命令：SET_BACKLIGHT 50 — 绝对最大亮度";
         }
         catch (Exception ex)
         {
@@ -426,7 +569,7 @@ internal sealed class BrightnessPopup : Form
         }
         finally
         {
-            if (Visible)
+            if (Visible && _connected is true && _session.IsOpen)
             {
                 SetControlsEnabled(true);
                 SetBusyDisplay(false);
@@ -445,8 +588,8 @@ internal sealed class BrightnessPopup : Form
         SetTransitionLayout(true);
         SetControlsEnabled(false);
         SetBusyDisplay(true);
-        _statusLabel.Text = "退出中，正在给电视发送命令…";
-        _commandLabel.Text = "命令：WAIT — 等待亮度界面完成响应";
+        _statusLabel.Text = "正在收起亮度窗口…";
+        _commandLabel.Text = "命令：HIDE — 保持绝对背光通道在线";
         try
         {
             await _session.CloseAsync();
@@ -824,21 +967,91 @@ internal static class ModernDrawing
 internal sealed class SamsungBrightnessSession : IAsyncDisposable
 {
     private const string AppName = "Codex M70B Control";
+    private const string BridgeAppId = "q8YFGkFK1p.M70BProbe";
     private readonly string _host;
-    private readonly string _token;
+    private string _token;
+    private readonly BrightnessBridgeServer _bridge;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private ClientWebSocket? _socket;
 
-    public SamsungBrightnessSession(string host, string token, int currentBrightness)
+    public SamsungBrightnessSession(
+        string host,
+        string token,
+        int currentBrightness,
+        BrightnessBridgeServer bridge)
     {
         _host = host;
         _token = token;
+        _bridge = bridge;
         CurrentBrightness = Math.Clamp(currentBrightness, 0, 50);
     }
 
     public int CurrentBrightness { get; private set; }
-    public bool IsOpen => _socket?.State == WebSocketState.Open;
+    public bool IsOpen => _bridge.IsConnected;
     public event Action<string, string>? ProgressChanged;
+
+    public async Task WakeBridgeAsync()
+    {
+        if (_bridge.IsConnected)
+            return;
+
+        Report(
+            "正在让显示器打开 HDMI 亮度桥接器…",
+            $"MS_APPLICATION_START — {BridgeAppId}");
+
+        try
+        {
+            await LaunchBridgeAppViaControlAsync();
+            if (await WaitForBridgeAsync(TimeSpan.FromSeconds(10)))
+                return;
+        }
+        catch
+        {
+            // Some older firmware does not expose the application-control channel.
+            // Fall through to the paired Eden remote channel below.
+        }
+
+        if (string.IsNullOrWhiteSpace(_token))
+        {
+            Report(
+                "请在显示器上允许电脑遥控，然后稍候…",
+                "PAIR_REMOTE — 等待电视授权");
+            _token = await PairAsync(_host);
+            LocalState.SaveToken(_token);
+        }
+
+        Report(
+            "正在尝试兼容启动方式…",
+            $"LAUNCH_APP {BridgeAppId} — NATIVE_LAUNCH");
+
+        try
+        {
+            await LaunchBridgeAppAsync("NATIVE_LAUNCH");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            Report(
+                "请在显示器上允许电脑遥控，然后稍候…",
+                "PAIR_REMOTE — 等待电视授权");
+            _token = await PairAsync(_host);
+            LocalState.SaveToken(_token);
+            await LaunchBridgeAppAsync("NATIVE_LAUNCH");
+        }
+
+        if (await WaitForBridgeAsync(TimeSpan.FromSeconds(8)))
+            return;
+
+        // Developer-installed Web applications are reported with different app
+        // types on different firmware revisions.  Try Eden's other launch mode
+        // before declaring the display unavailable.
+        Report(
+            "第一次启动未响应，正在尝试兼容模式…",
+            $"LAUNCH_APP {BridgeAppId} — DEEP_LINK");
+        await LaunchBridgeAppAsync("DEEP_LINK");
+
+        if (!await WaitForBridgeAsync(TimeSpan.FromSeconds(10)))
+            throw new TimeoutException("显示器没有启动亮度桥接器。");
+    }
 
     public static async Task<string> PairAsync(string host)
     {
@@ -867,39 +1080,74 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         }
     }
 
+    private async Task LaunchBridgeAppAsync(string actionType)
+    {
+        using var socket = CreateSocket();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await socket.ConnectAsync(CreateUri(_host, _token), timeout.Token);
+        await RequireConnectedAsync(socket, timeout.Token);
+
+        string json = JsonSerializer.Serialize(new
+        {
+            method = "ms.channel.emit",
+            @params = new
+            {
+                @event = "ed.apps.launch",
+                to = "host",
+                data = new
+                {
+                    appId = BridgeAppId,
+                    action_type = actionType,
+                    metaTag = string.Empty
+                }
+            }
+        });
+        byte[] data = Encoding.UTF8.GetBytes(json);
+        await socket.SendAsync(data, WebSocketMessageType.Text, true, timeout.Token);
+        await Task.Delay(250, timeout.Token);
+    }
+
+    private async Task LaunchBridgeAppViaControlAsync()
+    {
+        using var socket = CreateSocket();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await socket.ConnectAsync(CreateControlUri(_host), timeout.Token);
+        await RequireConnectedAsync(socket, timeout.Token);
+
+        string json = JsonSerializer.Serialize(new
+        {
+            id = BridgeAppId,
+            method = "ms.application.start",
+            @params = new { id = BridgeAppId }
+        });
+        byte[] data = Encoding.UTF8.GetBytes(json);
+        await socket.SendAsync(data, WebSocketMessageType.Text, true, timeout.Token);
+        await Task.Delay(250, timeout.Token);
+    }
+
+    private async Task<bool> WaitForBridgeAsync(TimeSpan timeout)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (_bridge.IsConnected)
+                return true;
+            await Task.Delay(200);
+        }
+        return _bridge.IsConnected;
+    }
+
     public async Task OpenAsync()
     {
         await _gate.WaitAsync();
         try
         {
-            if (IsOpen)
-                return;
+            if (!IsOpen)
+                throw new InvalidOperationException("电视亮度桥接器尚未连接。请先在电视上启动桥接应用。");
 
-            _socket?.Dispose();
-            _socket = CreateSocket();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            Report("启动中，正在给电视发送命令…", "CONNECT — 建立局域网连接");
-            await _socket.ConnectAsync(CreateUri(_host, _token), timeout.Token);
-            await RequireConnectedAsync(_socket, timeout.Token);
-
-            Report("启动中，正在给电视发送命令…", "KEY_MENU — 打开设置");
-            await ClickAsync(_socket, "KEY_MENU", 650, timeout.Token);
-            Report("启动中，正在给电视发送命令…", "KEY_ENTER — 进入 Picture");
-            await ClickAsync(_socket, "KEY_ENTER", 450, timeout.Token);
-            for (int i = 0; i < 3; i++)
-            {
-                Report("启动中，正在给电视发送命令…", $"KEY_DOWN {i + 1}/3 — 定位 Expert Settings");
-                await ClickAsync(_socket, "KEY_DOWN", 90, timeout.Token);
-            }
-            Report("启动中，正在给电视发送命令…", "KEY_ENTER — 进入 Expert Settings");
-            await ClickAsync(_socket, "KEY_ENTER", 650, timeout.Token);
-            Report("启动中，正在给电视发送命令…", "KEY_ENTER — 进入 Brightness 调节");
-            await ClickAsync(_socket, "KEY_ENTER", 500, timeout.Token);
-        }
-        catch
-        {
-            AbortSocket();
-            throw;
+            Report("启动中，正在读取显示器背光…", "GET_BACKLIGHT — 读取绝对值");
+            CurrentBrightness = await _bridge.GetBrightnessAsync();
+            LocalState.SaveBrightness(CurrentBrightness);
         }
         finally
         {
@@ -913,17 +1161,10 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         await _gate.WaitAsync();
         try
         {
-            ClientWebSocket socket = RequireOpenSocket();
-            string key = target > CurrentBrightness ? "KEY_RIGHT" : "KEY_LEFT";
-            int total = Math.Abs(target - CurrentBrightness);
-            int sent = 0;
-            while (CurrentBrightness != target)
-            {
-                sent++;
-                Report("调节中，正在给电视发送命令…", $"{key} {sent}/{total} — 目标 {target}");
-                await ClickAsync(socket, key, 70, CancellationToken.None);
-                CurrentBrightness += key == "KEY_RIGHT" ? 1 : -1;
-            }
+            if (!IsOpen)
+                throw new InvalidOperationException("电视亮度桥接器已断开。");
+            Report("调节中，正在给电视发送命令…", $"SET_BACKLIGHT {target} — 绝对值");
+            CurrentBrightness = await _bridge.SetBrightnessAsync(target);
             LocalState.SaveBrightness(CurrentBrightness);
         }
         finally
@@ -934,28 +1175,23 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
 
     public async Task ResetMinimumAsync()
     {
-        await ResetAsync("KEY_LEFT", 0);
+        await ResetAsync(0);
     }
 
     public async Task ResetMaximumAsync()
     {
-        await ResetAsync("KEY_RIGHT", 50);
+        await ResetAsync(50);
     }
 
-    private async Task ResetAsync(string key, int resultingBrightness)
+    private async Task ResetAsync(int resultingBrightness)
     {
         await _gate.WaitAsync();
         try
         {
-            ClientWebSocket socket = RequireOpenSocket();
-            for (int i = 0; i < 50; i++)
-            {
-                Report(
-                    "重置中，正在给电视发送命令…",
-                    $"{key} {i + 1}/50 — 重置为 {resultingBrightness}");
-                await ClickAsync(socket, key, 45, CancellationToken.None);
-            }
-            CurrentBrightness = resultingBrightness;
+            if (!IsOpen)
+                throw new InvalidOperationException("电视亮度桥接器已断开。");
+            Report("重置中，正在给电视发送命令…", $"SET_BACKLIGHT {resultingBrightness} — 绝对值");
+            CurrentBrightness = await _bridge.SetBrightnessAsync(resultingBrightness);
             LocalState.SaveBrightness(CurrentBrightness);
         }
         finally
@@ -966,46 +1202,19 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
 
     public async Task CloseAsync()
     {
-        await _gate.WaitAsync();
-        try
-        {
-            if (!IsOpen || _socket is null)
-            {
-                AbortSocket();
-                return;
-            }
+        Report("亮度窗口已收起", "HIDE — 绝对背光通道保持在线");
+        await Task.CompletedTask;
+    }
 
-            Report("退出中，正在给电视发送命令…", "WAIT — 等待亮度界面完成响应");
-            await Task.Delay(1500);
-            for (int i = 0; i < 4; i++)
-            {
-                Report("退出中，正在给电视发送命令…", $"KEY_RETURN {i + 1}/4 — 逐层关闭设置");
-                await ClickAsync(_socket, "KEY_RETURN", 1000, CancellationToken.None);
-            }
-
-            try
-            {
-                await _socket.CloseAsync(
-                    WebSocketCloseStatus.NormalClosure,
-                    "done",
-                    CancellationToken.None);
-            }
-            catch
-            {
-                _socket.Abort();
-            }
-            _socket.Dispose();
-            _socket = null;
-        }
-        finally
-        {
-            _gate.Release();
-        }
+    public async Task AbortAsync()
+    {
+        await Task.CompletedTask;
     }
 
     public async ValueTask DisposeAsync()
     {
-        await CloseAsync();
+        AbortSocket();
+        await Task.CompletedTask;
         _gate.Dispose();
     }
 
@@ -1043,17 +1252,29 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         return new Uri(uri);
     }
 
+    private static Uri CreateControlUri(string host)
+    {
+        string encodedName = Uri.EscapeDataString(
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(AppName)));
+        return new Uri($"wss://{host}:8002/api/v2?name={encodedName}");
+    }
+
     private static async Task RequireConnectedAsync(
         ClientWebSocket socket,
         CancellationToken cancellationToken)
     {
-        string text = await ReceiveTextAsync(socket, cancellationToken);
-        using JsonDocument document = JsonDocument.Parse(text);
-        string? eventName = document.RootElement.TryGetProperty("event", out JsonElement eventElement)
-            ? eventElement.GetString()
-            : null;
-        if (eventName != "ms.channel.connect")
-            throw new InvalidOperationException($"显示器拒绝连接：{eventName ?? "未知响应"}");
+        while (true)
+        {
+            string text = await ReceiveTextAsync(socket, cancellationToken);
+            using JsonDocument document = JsonDocument.Parse(text);
+            string? eventName = document.RootElement.TryGetProperty("event", out JsonElement eventElement)
+                ? eventElement.GetString()
+                : null;
+            if (eventName == "ms.channel.connect")
+                return;
+            if (eventName == "ms.channel.unauthorized")
+                throw new UnauthorizedAccessException("显示器没有授权这台电脑进行遥控。");
+        }
     }
 
     private static async Task<string> ReceiveTextAsync(
@@ -1092,6 +1313,361 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         byte[] data = Encoding.UTF8.GetBytes(json);
         await socket.SendAsync(data, WebSocketMessageType.Text, true, cancellationToken);
         await Task.Delay(delayMs, cancellationToken);
+    }
+}
+
+internal sealed class BrightnessBridgeServer : IAsyncDisposable
+{
+    private readonly string _allowedHost;
+    private readonly TcpListener _listener;
+    private readonly CancellationTokenSource _shutdown = new();
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
+    private readonly object _socketLock = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<int>> _pending = new();
+    private Task? _acceptLoop;
+    private WebSocket? _socket;
+    private int _connected;
+    private int _currentBrightness;
+
+    public BrightnessBridgeServer(string allowedHost, int port)
+    {
+        _allowedHost = allowedHost;
+        _listener = new TcpListener(IPAddress.Any, port);
+    }
+
+    public bool IsConnected => Volatile.Read(ref _connected) == 1;
+    public int CurrentBrightness => Volatile.Read(ref _currentBrightness);
+    public event Action<bool>? ConnectionChanged;
+
+    public void Start()
+    {
+        if (_acceptLoop is not null)
+            return;
+        _listener.Start();
+        _acceptLoop = AcceptLoopAsync();
+    }
+
+    public Task<int> GetBrightnessAsync()
+        => SendRequestAsync("get", null, TimeSpan.FromSeconds(5));
+
+    public Task<int> SetBrightnessAsync(int value)
+        => SendRequestAsync("set", Math.Clamp(value, 0, 50), TimeSpan.FromSeconds(5));
+
+    public async Task RequestExitAsync()
+    {
+        if (!IsConnected)
+            return;
+        try
+        {
+            await SendRequestAsync("exit", null, TimeSpan.FromSeconds(3));
+        }
+        catch
+        {
+            // The TV may close the application before its acknowledgement arrives.
+        }
+    }
+
+    private async Task AcceptLoopAsync()
+    {
+        while (!_shutdown.IsCancellationRequested)
+        {
+            try
+            {
+                TcpClient client = await _listener.AcceptTcpClientAsync(_shutdown.Token);
+                _ = HandleClientAsync(client);
+            }
+            catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (SocketException) when (_shutdown.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+    }
+
+    private async Task HandleClientAsync(TcpClient client)
+    {
+        using (client)
+        {
+            if (client.Client.RemoteEndPoint is not IPEndPoint remote ||
+                !string.Equals(remote.Address.ToString(), _allowedHost, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            NetworkStream stream = client.GetStream();
+            WebSocket? websocket = null;
+            try
+            {
+                string headers = await ReadHttpHeadersAsync(stream, _shutdown.Token);
+                string[] lines = headers.Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+                if (lines.Length == 0 || !lines[0].StartsWith("GET /m70b ", StringComparison.Ordinal))
+                    return;
+
+                Dictionary<string, string> values = lines.Skip(1)
+                    .Select(line => line.Split(':', 2))
+                    .Where(parts => parts.Length == 2)
+                    .ToDictionary(
+                        parts => parts[0].Trim(),
+                        parts => parts[1].Trim(),
+                        StringComparer.OrdinalIgnoreCase);
+                if (!values.TryGetValue("Sec-WebSocket-Key", out string? key))
+                    return;
+
+                string accept = Convert.ToBase64String(SHA1.HashData(
+                    Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+                string response =
+                    "HTTP/1.1 101 Switching Protocols\r\n" +
+                    "Upgrade: websocket\r\n" +
+                    "Connection: Upgrade\r\n" +
+                    $"Sec-WebSocket-Accept: {accept}\r\n\r\n";
+                await stream.WriteAsync(Encoding.ASCII.GetBytes(response), _shutdown.Token);
+
+                websocket = WebSocket.CreateFromStream(
+                    stream,
+                    isServer: true,
+                    subProtocol: null,
+                    keepAliveInterval: TimeSpan.FromSeconds(20));
+
+                WebSocket? previous;
+                lock (_socketLock)
+                {
+                    previous = _socket;
+                    _socket = websocket;
+                }
+                if (previous is not null && previous != websocket)
+                {
+                    try { previous.Abort(); } catch { }
+                    previous.Dispose();
+                }
+
+                await ReceiveLoopAsync(websocket, _shutdown.Token);
+            }
+            catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+            {
+            }
+            catch (Exception)
+            {
+                // A disconnect is reflected through ConnectionChanged below.
+            }
+            finally
+            {
+                bool wasActive;
+                lock (_socketLock)
+                {
+                    wasActive = websocket is not null && ReferenceEquals(_socket, websocket);
+                    if (wasActive)
+                        _socket = null;
+                }
+                websocket?.Dispose();
+                if (wasActive)
+                {
+                    SetConnected(false);
+                    FailPending(new IOException("电视亮度桥接器已断开。"));
+                }
+            }
+        }
+    }
+
+    private async Task ReceiveLoopAsync(WebSocket websocket, CancellationToken cancellationToken)
+    {
+        while (websocket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+        {
+            string? text = await ReceiveBridgeTextAsync(websocket, cancellationToken);
+            if (text is null)
+                return;
+
+            using JsonDocument document = JsonDocument.Parse(text);
+            JsonElement root = document.RootElement;
+            string? operation = root.TryGetProperty("op", out JsonElement op) ? op.GetString() : null;
+            string? id = root.TryGetProperty("id", out JsonElement idElement) &&
+                         idElement.ValueKind == JsonValueKind.String
+                ? idElement.GetString()
+                : null;
+
+            if (operation is "state" or "ack")
+            {
+                if (root.TryGetProperty("value", out JsonElement valueElement) &&
+                    valueElement.TryGetInt32(out int value))
+                {
+                    value = Math.Clamp(value, 0, 50);
+                    Volatile.Write(ref _currentBrightness, value);
+                    SetConnected(true);
+                    if (id is not null && _pending.TryRemove(id, out TaskCompletionSource<int>? completion))
+                        completion.TrySetResult(value);
+                }
+            }
+            else if (operation == "error" && id is not null &&
+                     _pending.TryRemove(id, out TaskCompletionSource<int>? completion))
+            {
+                string message = root.TryGetProperty("message", out JsonElement messageElement)
+                    ? messageElement.GetString() ?? "电视返回未知错误。"
+                    : "电视返回未知错误。";
+                completion.TrySetException(new InvalidOperationException(message));
+            }
+        }
+    }
+
+    private async Task<int> SendRequestAsync(string operation, int? value, TimeSpan timeout)
+    {
+        WebSocket websocket;
+        lock (_socketLock)
+        {
+            websocket = _socket is { State: WebSocketState.Open }
+                ? _socket
+                : throw new InvalidOperationException("电视亮度桥接器尚未连接。");
+        }
+
+        string id = Guid.NewGuid().ToString("N");
+        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pending.TryAdd(id, completion))
+            throw new InvalidOperationException("无法创建亮度命令。请重试。");
+
+        string json = value.HasValue
+            ? JsonSerializer.Serialize(new { op = operation, id, value = value.Value })
+            : JsonSerializer.Serialize(new { op = operation, id });
+        byte[] data = Encoding.UTF8.GetBytes(json);
+
+        try
+        {
+            using var commandTimeout = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+            commandTimeout.CancelAfter(timeout);
+
+            await _sendGate.WaitAsync(commandTimeout.Token);
+            try
+            {
+                await websocket.SendAsync(data, WebSocketMessageType.Text, true, commandTimeout.Token);
+            }
+            finally
+            {
+                _sendGate.Release();
+            }
+            return await completion.Task.WaitAsync(commandTimeout.Token);
+        }
+        catch (OperationCanceledException) when (!_shutdown.IsCancellationRequested)
+        {
+            // A stalled send is not a usable connection.  Abort it so the TV's
+            // reconnect watchdog can establish a fresh socket automatically.
+            lock (_socketLock)
+            {
+                if (ReferenceEquals(_socket, websocket))
+                    websocket.Abort();
+            }
+            throw new TimeoutException("电视在规定时间内没有响应，正在自动重新连接。");
+        }
+        finally
+        {
+            _pending.TryRemove(id, out _);
+        }
+    }
+
+    private void SetConnected(bool connected)
+    {
+        int next = connected ? 1 : 0;
+        if (Interlocked.Exchange(ref _connected, next) != next)
+            ConnectionChanged?.Invoke(connected);
+    }
+
+    private void FailPending(Exception exception)
+    {
+        foreach ((string id, TaskCompletionSource<int> completion) in _pending)
+        {
+            if (_pending.TryRemove(id, out _))
+                completion.TrySetException(exception);
+        }
+    }
+
+    private static async Task<string> ReadHttpHeadersAsync(
+        NetworkStream stream,
+        CancellationToken cancellationToken)
+    {
+        var bytes = new List<byte>(1024);
+        var buffer = new byte[1];
+        while (bytes.Count < 16 * 1024)
+        {
+            int count = await stream.ReadAsync(buffer, cancellationToken);
+            if (count == 0)
+                throw new IOException("连接在 WebSocket 握手前关闭。");
+            bytes.Add(buffer[0]);
+            int n = bytes.Count;
+            if (n >= 4 && bytes[n - 4] == '\r' && bytes[n - 3] == '\n' &&
+                bytes[n - 2] == '\r' && bytes[n - 1] == '\n')
+                return Encoding.ASCII.GetString(bytes.ToArray());
+        }
+        throw new InvalidDataException("WebSocket 请求头过大。");
+    }
+
+    private static async Task<string?> ReceiveBridgeTextAsync(
+        WebSocket websocket,
+        CancellationToken cancellationToken)
+    {
+        var buffer = new byte[4096];
+        using var message = new MemoryStream();
+        while (true)
+        {
+            WebSocketReceiveResult result = await websocket.ReceiveAsync(buffer, cancellationToken);
+            if (result.MessageType == WebSocketMessageType.Close)
+                return null;
+            message.Write(buffer, 0, result.Count);
+            if (result.EndOfMessage)
+                return Encoding.UTF8.GetString(message.ToArray());
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _shutdown.Cancel();
+        _listener.Stop();
+        WebSocket? websocket;
+        lock (_socketLock)
+        {
+            websocket = _socket;
+            _socket = null;
+        }
+        websocket?.Abort();
+        websocket?.Dispose();
+        FailPending(new OperationCanceledException("亮度桥接服务已关闭。"));
+        if (_acceptLoop is not null)
+        {
+            try { await _acceptLoop; } catch (OperationCanceledException) { }
+        }
+        _sendGate.Dispose();
+        _shutdown.Dispose();
+    }
+}
+
+internal sealed class MonitorConnectivity : IAsyncDisposable
+{
+    private readonly BrightnessBridgeServer _bridge;
+    private bool? _lastResult;
+
+    public MonitorConnectivity(BrightnessBridgeServer bridge)
+    {
+        _bridge = bridge;
+        _bridge.ConnectionChanged += Bridge_ConnectionChanged;
+    }
+
+    public event Action<bool>? StatusChanged;
+
+    public void Start()
+    {
+        PublishIfChanged(_bridge.IsConnected);
+    }
+
+    private void Bridge_ConnectionChanged(bool connected) => PublishIfChanged(connected);
+
+    private void PublishIfChanged(bool connected)
+    {
+        if (_lastResult == connected)
+            return;
+        _lastResult = connected;
+        StatusChanged?.Invoke(connected);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _bridge.ConnectionChanged -= Bridge_ConnectionChanged;
+        await Task.CompletedTask;
     }
 }
 

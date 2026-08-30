@@ -12,10 +12,10 @@
     <DebugSymbols>false</DebugSymbols>
     <AssemblyName>M70B亮度调节</AssemblyName>
     <ApplicationIcon>assets\m70b-tv.ico</ApplicationIcon>
-    <Version>0.1.1</Version>
+    <Version>0.3.2</Version>
     <AssemblyTitle>Samsung M70B Brightness</AssemblyTitle>
     <Authors>dttutty</Authors>
-    <Description>Windows tray brightness controller for Samsung M70B Smart Monitor</Description>
+    <Description>Absolute Windows tray brightness controller for Samsung Tizen displays</Description>
   </PropertyGroup>
 
   <ItemGroup>
