@@ -1,0 +1,31 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish
+        run: >-
+          dotnet publish .\src\M70BBrightness\M70BBrightness.csproj
+          -c Release
+          -r win-x64
+          --self-contained false
+          -o .\publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: M70BBrightness-win-x64
+          path: .\publish\M70B亮度调节.exe
+
