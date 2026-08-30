@@ -26,9 +26,11 @@ A Windows 11 tray brightness controller for Samsung M70B Smart Monitors. A compa
 - The companion app keeps the HDMI input full-screen through `tizen.tvwindow`
 - Automatically launches the Tizen bridge by application ID when the tray popup is opened
 - Automatically reconnects after a temporary network interruption
-- Reset-to-minimum and reset-to-maximum buttons
+- Flat sun buttons at the two ends of the slider set absolute minimum or maximum brightness
+- The target value appears above the thumb only while the slider is being used
 - Live launch, connection, adjustment, and timeout status
-- Explicit close button; closing the popup keeps the TV bridge ready
+- Clicking outside starts a brief closing transition; the TV bridge stays ready
+- The tray icon turns gray when HDMI or the TV bridge is disconnected
 - Tizen pairing token encrypted with Windows DPAPI
 - Single-instance protection to prevent duplicate commands
 
@@ -45,9 +47,9 @@ Download the self-contained Windows x64 build from [GitHub Releases](https://git
 5. Left-click the television icon in the Windows system tray.
 6. If the bridge is not running, the Windows app launches it automatically and waits for it to connect.
 7. Drag the slider to adjust brightness.
-8. Click the popup's `×` button to dismiss it.
+8. Click anywhere outside the popup to dismiss it after a brief closing transition.
 
-Clicking elsewhere does not close the popup. To stop the background app completely, right-click its tray icon and choose **Exit**.
+To stop the background app completely, right-click its tray icon and choose **Exit**.
 
 The bridge reports the real current backlight value whenever the popup opens, including changes made through another controller.
 
@@ -113,9 +115,11 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 - 配套应用通过 `tizen.tvwindow` 保持 HDMI 电脑画面全屏显示
 - 点击托盘弹窗时，可按应用 ID 自动启动电视端桥接器
 - 局域网临时中断后自动重新连接
-- 最小/最大亮度重置按钮
+- 滑块两端的扁平太阳按钮可直接设为绝对最小/最大亮度
+- 只在操作滑块时，才在滑块上方显示目标亮度
 - 实时显示启动、连接、调节和超时状态
-- 点击右上角关闭弹窗，电视端桥接器继续保持就绪
+- 点击弹窗外会经过短暂收起过渡，电视端桥接器继续保持就绪
+- HDMI 或电视桥接断开时，托盘图标自动变灰
 - 使用 Windows DPAPI 加密保存 Tizen 配对令牌
 - 单实例运行，避免多个后台进程重复发送命令
 
@@ -132,9 +136,9 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 5. 左键单击 Windows 系统托盘中的电视图标。
 6. 如果电视端桥接器没有运行，Windows 程序会自动启动它并等待连接。
 7. 拖动滑块调节亮度。
-8. 点击弹窗右上角 `×` 关闭弹窗。
+8. 点击弹窗外的任意位置，弹窗会经过短暂收起过渡后隐藏。
 
-点击弹窗外不会关闭。若要完全结束后台程序，请右键托盘图标并选择“退出”。
+若要完全结束后台程序，请右键托盘图标并选择“退出”。
 
 每次打开弹窗时，桥接器都会回报当前真实背光值，包括由其他控制方式产生的变化。
 

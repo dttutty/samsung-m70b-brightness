@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Management;
 using System.Text;
 using System.Text.Json;
 
@@ -121,17 +122,23 @@ internal sealed class TrayContext : ApplicationContext
     private readonly BrightnessPopup _popup;
     private readonly NotifyIcon _trayIcon;
     private readonly Icon _appIcon;
+    private readonly Icon _offlineIcon;
     private readonly MonitorConnectivity _connectivity;
+    private readonly HdmiMonitorPresence _hdmiPresence;
     private readonly BrightnessBridgeServer _bridge;
     private bool _exiting;
+    private bool _bridgeConnected;
+    private bool _hdmiConnected;
 
     public TrayContext(string host, string token, bool openAtStartup = false)
     {
         _bridge = new BrightnessBridgeServer(host, 8765);
         var session = new SamsungBrightnessSession(host, token, LocalState.LoadBrightness(), _bridge);
         _connectivity = new MonitorConnectivity(_bridge);
+        _hdmiPresence = new HdmiMonitorPresence();
         _popup = new BrightnessPopup(session, _connectivity, host);
         _appIcon = (Icon)(Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application).Clone();
+        _offlineIcon = IconVisuals.CreateGrayscale(_appIcon);
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("打开亮度调节", null, (_, _) => _popup.OpenNearCursor());
@@ -141,7 +148,7 @@ internal sealed class TrayContext : ApplicationContext
         _trayIcon = new NotifyIcon
         {
             Text = "Samsung M70B 亮度调节",
-            Icon = _appIcon,
+            Icon = _offlineIcon,
             ContextMenuStrip = menu,
             Visible = true
         };
@@ -155,8 +162,11 @@ internal sealed class TrayContext : ApplicationContext
         _trayIcon.BalloonTipText = "左键单击此图标即可打开亮度滑块。";
         _trayIcon.ShowBalloonTip(3000);
         _ = _popup.Handle;
+        _connectivity.StatusChanged += TrayConnectivity_StatusChanged;
+        _hdmiPresence.StatusChanged += HdmiPresence_StatusChanged;
         _bridge.Start();
         _connectivity.Start();
+        _hdmiPresence.Start();
         if (openAtStartup)
         {
             EventHandler? openWhenReady = null;
@@ -169,18 +179,60 @@ internal sealed class TrayContext : ApplicationContext
         }
     }
 
+    private void TrayConnectivity_StatusChanged(bool connected)
+    {
+        _bridgeConnected = connected;
+        UpdateTrayConnectionState();
+    }
+
+    private void HdmiPresence_StatusChanged(bool connected)
+    {
+        _hdmiConnected = connected;
+        UpdateTrayConnectionState();
+    }
+
+    private void UpdateTrayConnectionState()
+    {
+        void Update()
+        {
+            if (_exiting)
+                return;
+
+            bool connected = _bridgeConnected && _hdmiConnected;
+            _trayIcon.Icon = connected ? _appIcon : _offlineIcon;
+            _trayIcon.Text = connected
+                ? "Samsung 显示器亮度 · 已连接"
+                : !_hdmiConnected
+                    ? "Samsung 显示器亮度 · HDMI 未连接"
+                    : "Samsung 显示器亮度 · 桥接器已断开";
+        }
+
+        if (_popup.IsHandleCreated && _popup.InvokeRequired)
+        {
+            try { _popup.BeginInvoke(Update); } catch (InvalidOperationException) { }
+        }
+        else
+        {
+            Update();
+        }
+    }
+
     private async Task ExitAsync()
     {
         if (_exiting)
             return;
 
         _exiting = true;
+        _connectivity.StatusChanged -= TrayConnectivity_StatusChanged;
+        _hdmiPresence.StatusChanged -= HdmiPresence_StatusChanged;
+        _hdmiPresence.Dispose();
         await _popup.ShutdownAsync();
         await _bridge.RequestExitAsync();
         await _connectivity.DisposeAsync();
         await _bridge.DisposeAsync();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
+        _offlineIcon.Dispose();
         _appIcon.Dispose();
         _popup.Dispose();
         ExitThread();
@@ -193,22 +245,23 @@ internal sealed class BrightnessPopup : Form
     private readonly MonitorConnectivity _connectivity;
     private readonly string _host;
     private readonly ModernBrightnessSlider _slider = new();
-    private readonly Label _valueLabel = new();
     private readonly Label _subtitleLabel = new();
     private readonly Label _statusLabel = new();
     private readonly Label _commandLabel = new();
-    private readonly ModernTileButton _minimumButton = new();
-    private readonly ModernTileButton _maximumButton = new();
-    private readonly ModernCloseButton _closeButton = new();
+    private readonly ModernSunButton _minimumButton = new() { GlyphSize = 11F };
+    private readonly ModernSunButton _maximumButton = new() { GlyphSize = 17F };
     private readonly ProgressBar _progressBar = new();
     private readonly System.Windows.Forms.Timer _sliderTimer = new();
     private readonly System.Windows.Forms.Timer _closeTimer = new();
+    private readonly System.Windows.Forms.Timer _outsideClickTimer = new();
     private bool _opening;
     private bool _waking;
     private bool _closing;
     private bool _applying;
     private bool _ignoreSlider;
     private bool? _connected;
+    private bool _mouseButtonsWereDown;
+    private DateTime _outsideClickArmedAt;
 
     public BrightnessPopup(
         SamsungBrightnessSession session,
@@ -220,7 +273,7 @@ internal sealed class BrightnessPopup : Form
         _host = host;
 
         Text = "Samsung M70B 亮度";
-        ClientSize = new Size(400, 260);
+        ClientSize = new Size(400, 216);
         FormBorderStyle = FormBorderStyle.None;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -249,28 +302,15 @@ internal sealed class BrightnessPopup : Form
         _subtitleLabel.AutoSize = true;
         _subtitleLabel.Location = new Point(21, 45);
 
-        _valueLabel.Text = $"{_session.CurrentBrightness} / 50";
-        _valueLabel.ForeColor = Color.White;
-        _valueLabel.BackColor = Color.Transparent;
-        _valueLabel.Font = new Font("Segoe UI Variable Display", 15F, FontStyle.Bold);
-        _valueLabel.TextAlign = ContentAlignment.MiddleRight;
-        _valueLabel.Location = new Point(270, 10);
-        _valueLabel.Size = new Size(76, 38);
-
-        _closeButton.Location = new Point(358, 12);
-        _closeButton.Size = new Size(28, 28);
-        _closeButton.Click += (_, _) => BeginHideAndCloseSession();
-
         _slider.Minimum = 0;
         _slider.Maximum = 50;
         _slider.Value = _session.CurrentBrightness;
-        _slider.Location = new Point(18, 137);
-        _slider.Size = new Size(362, 46);
+        _slider.Location = new Point(58, 70);
+        _slider.Size = new Size(284, 66);
         _slider.Scroll += (_, _) =>
         {
             if (_ignoreSlider)
                 return;
-            _valueLabel.Text = $"{_slider.Value} / 50";
             _sliderTimer.Stop();
             _sliderTimer.Start();
         };
@@ -280,20 +320,20 @@ internal sealed class BrightnessPopup : Form
             await ApplyPendingSliderAsync();
         };
 
-        _minimumButton.Text = "☾   重置最小亮度";
-        _minimumButton.Location = new Point(20, 76);
-        _minimumButton.Size = new Size(174, 48);
+        _minimumButton.AccessibleName = "最小亮度";
+        _minimumButton.Location = new Point(16, 98);
+        _minimumButton.Size = new Size(38, 38);
         _minimumButton.Click += async (_, _) => await ResetAsync(minimum: true);
 
-        _maximumButton.Text = "☀   重置最大亮度";
-        _maximumButton.Location = new Point(206, 76);
-        _maximumButton.Size = new Size(174, 48);
+        _maximumButton.AccessibleName = "最大亮度";
+        _maximumButton.Location = new Point(346, 98);
+        _maximumButton.Size = new Size(38, 38);
         _maximumButton.Click += async (_, _) => await ResetAsync(minimum: false);
 
-        _statusLabel.Text = "点击右上角 × 关闭显示器设置";
+        _statusLabel.Text = string.Empty;
         _statusLabel.ForeColor = Color.FromArgb(228, 228, 228);
         _statusLabel.BackColor = Color.Transparent;
-        _statusLabel.Location = new Point(20, 190);
+        _statusLabel.Location = new Point(20, 148);
         _statusLabel.Size = new Size(360, 22);
         _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
 
@@ -301,10 +341,10 @@ internal sealed class BrightnessPopup : Form
         _commandLabel.ForeColor = Color.FromArgb(155, 155, 155);
         _commandLabel.BackColor = Color.Transparent;
         _commandLabel.Font = new Font("Cascadia Mono", 8.25F);
-        _commandLabel.Location = new Point(20, 214);
+        _commandLabel.Location = new Point(20, 172);
         _commandLabel.Size = new Size(360, 21);
 
-        _progressBar.Location = new Point(20, 244);
+        _progressBar.Location = new Point(20, 204);
         _progressBar.Size = new Size(360, 4);
         _progressBar.Style = ProgressBarStyle.Marquee;
         _progressBar.MarqueeAnimationSpeed = 28;
@@ -317,14 +357,26 @@ internal sealed class BrightnessPopup : Form
             await ApplyPendingSliderAsync();
         };
 
-        _closeTimer.Interval = 250;
+        _closeTimer.Interval = 320;
         _closeTimer.Tick += (_, _) =>
         {
             _closeTimer.Stop();
+            _outsideClickTimer.Stop();
             Hide();
             SetBusyDisplay(false);
-            _closeButton.Enabled = true;
             _closing = false;
+        };
+
+        _outsideClickTimer.Interval = 30;
+        _outsideClickTimer.Tick += (_, _) =>
+        {
+            bool mouseButtonsDown = Control.MouseButtons != MouseButtons.None;
+            bool newClick = mouseButtonsDown && !_mouseButtonsWereDown;
+            _mouseButtonsWereDown = mouseButtonsDown;
+            if (newClick &&
+                DateTime.UtcNow >= _outsideClickArmedAt &&
+                !Bounds.Contains(Cursor.Position))
+                BeginHideAndCloseSession();
         };
 
         _session.ProgressChanged += Session_ProgressChanged;
@@ -332,8 +384,6 @@ internal sealed class BrightnessPopup : Form
         Controls.AddRange([
             title,
             _subtitleLabel,
-            _closeButton,
-            _valueLabel,
             _slider,
             _minimumButton,
             _maximumButton,
@@ -361,6 +411,9 @@ internal sealed class BrightnessPopup : Form
         SyncSliderToSession();
         Show();
         Activate();
+        _mouseButtonsWereDown = Control.MouseButtons != MouseButtons.None;
+        _outsideClickArmedAt = DateTime.UtcNow.AddMilliseconds(250);
+        _outsideClickTimer.Start();
 
         if (_connected is true)
         {
@@ -541,7 +594,7 @@ internal sealed class BrightnessPopup : Form
                 await _session.MoveToAsync(target);
             }
             if (Visible)
-                _statusLabel.Text = "拖动滑块即可调节；点击右上角 × 关闭";
+                _statusLabel.Text = string.Empty;
         }
         catch (Exception ex)
         {
@@ -599,7 +652,7 @@ internal sealed class BrightnessPopup : Form
             return;
 
         _closing = true;
-        _closeButton.Enabled = false;
+        _outsideClickTimer.Stop();
         _sliderTimer.Stop();
         SetTransitionLayout(true);
         SetControlsEnabled(false);
@@ -613,6 +666,7 @@ internal sealed class BrightnessPopup : Form
     {
         _sliderTimer.Stop();
         _closeTimer.Stop();
+        _outsideClickTimer.Stop();
         Hide();
         await _session.CloseAsync();
         await _session.DisposeAsync();
@@ -622,7 +676,6 @@ internal sealed class BrightnessPopup : Form
     {
         _ignoreSlider = true;
         _slider.Value = _session.CurrentBrightness;
-        _valueLabel.Text = $"{_session.CurrentBrightness} / 50";
         _ignoreSlider = false;
     }
 
@@ -634,7 +687,7 @@ internal sealed class BrightnessPopup : Form
         SetBusyDisplay(false);
         _subtitleLabel.Text = "Samsung Tizen  ·  绝对背光已连接";
         _subtitleLabel.ForeColor = Color.FromArgb(113, 210, 143);
-        _statusLabel.Text = "拖动滑块即可调节；点击右上角 × 关闭";
+        _statusLabel.Text = string.Empty;
         _commandLabel.Text = "命令：READY — 绝对背光通道已就绪";
     }
 
@@ -653,7 +706,6 @@ internal sealed class BrightnessPopup : Form
 
     private void SetTransitionLayout(bool transition)
     {
-        _valueLabel.Visible = !transition;
         _slider.Visible = !transition;
         _minimumButton.Visible = !transition;
         _maximumButton.Visible = !transition;
@@ -669,11 +721,11 @@ internal sealed class BrightnessPopup : Form
         }
         else
         {
-            _statusLabel.Location = new Point(20, 190);
+            _statusLabel.Location = new Point(20, 148);
             _statusLabel.Size = new Size(360, 22);
-            _commandLabel.Location = new Point(20, 214);
+            _commandLabel.Location = new Point(20, 172);
             _commandLabel.Size = new Size(360, 21);
-            _progressBar.Location = new Point(20, 244);
+            _progressBar.Location = new Point(20, 204);
             _progressBar.Size = new Size(360, 4);
         }
     }
@@ -692,6 +744,13 @@ internal sealed class BrightnessPopup : Form
             BeginInvoke(Update);
         else
             Update();
+    }
+
+    protected override void OnDeactivate(EventArgs e)
+    {
+        base.OnDeactivate(e);
+        if (Visible && !_closing && DateTime.UtcNow >= _outsideClickArmedAt)
+            BeginHideAndCloseSession();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -737,6 +796,8 @@ internal sealed class ModernBrightnessSlider : Control
     private int _maximum = 50;
     private int _value;
     private bool _dragging;
+    private bool _showValueBubble;
+    private readonly System.Windows.Forms.Timer _bubbleTimer = new();
 
     public ModernBrightnessSlider()
     {
@@ -749,6 +810,13 @@ internal sealed class ModernBrightnessSlider : Control
             true);
         BackColor = Color.Transparent;
         Cursor = Cursors.Hand;
+        _bubbleTimer.Interval = 750;
+        _bubbleTimer.Tick += (_, _) =>
+        {
+            _bubbleTimer.Stop();
+            _showValueBubble = false;
+            Invalidate();
+        };
     }
 
     [DefaultValue(0)]
@@ -787,20 +855,13 @@ internal sealed class ModernBrightnessSlider : Control
         Graphics g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
-        const int iconWidth = 30;
-        const int rightPadding = 10;
-        int railLeft = iconWidth;
-        int railRight = Width - rightPadding;
+        const int railPadding = 10;
+        int railLeft = railPadding;
+        int railRight = Width - railPadding;
         int railWidth = Math.Max(1, railRight - railLeft);
-        int centerY = Height / 2;
+        int centerY = Height - 20;
         float ratio = (float)(_value - _minimum) / (_maximum - _minimum);
         int thumbX = railLeft + (int)Math.Round(railWidth * ratio);
-
-        using var iconFont = new Font("Segoe UI Symbol", 12F);
-        using var iconBrush = new SolidBrush(Enabled
-            ? Color.FromArgb(224, 224, 224)
-            : Color.FromArgb(110, 110, 110));
-        g.DrawString("☀", iconFont, iconBrush, new PointF(2, centerY - 10));
 
         using var inactivePen = new Pen(Color.FromArgb(105, 105, 105), 4)
         {
@@ -822,6 +883,30 @@ internal sealed class ModernBrightnessSlider : Control
             Enabled ? Color.FromArgb(96, 205, 255) : Color.FromArgb(110, 145, 158));
         g.FillEllipse(outerBrush, thumbX - 10, centerY - 10, 20, 20);
         g.FillEllipse(thumbBrush, thumbX - 6, centerY - 6, 12, 12);
+
+        if (_showValueBubble)
+        {
+            string valueText = _value.ToString();
+            using var bubbleFont = new Font("Segoe UI Variable Text", 9F, FontStyle.Bold);
+            Size textSize = TextRenderer.MeasureText(valueText, bubbleFont);
+            int bubbleWidth = Math.Max(34, textSize.Width + 14);
+            int bubbleX = Math.Clamp(thumbX - bubbleWidth / 2, 0, Width - bubbleWidth);
+            Rectangle bubble = new(bubbleX, 1, bubbleWidth, 27);
+            using GraphicsPath bubblePath = ModernDrawing.RoundedRectangle(bubble, 6);
+            using var bubbleBrush = new SolidBrush(Color.FromArgb(72, 72, 72));
+            using var bubbleBorder = new Pen(Color.FromArgb(92, 92, 92));
+            g.FillPath(bubbleBrush, bubblePath);
+            g.DrawPath(bubbleBorder, bubblePath);
+            TextRenderer.DrawText(
+                g,
+                valueText,
+                bubbleFont,
+                bubble,
+                Color.White,
+                TextFormatFlags.HorizontalCenter |
+                TextFormatFlags.VerticalCenter |
+                TextFormatFlags.SingleLine);
+        }
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -829,9 +914,12 @@ internal sealed class ModernBrightnessSlider : Control
         base.OnMouseDown(e);
         if (!Enabled || e.Button != MouseButtons.Left)
             return;
+        _bubbleTimer.Stop();
+        _showValueBubble = true;
         _dragging = true;
         Capture = true;
         UpdateFromMouse(e.X);
+        Invalidate();
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -848,13 +936,22 @@ internal sealed class ModernBrightnessSlider : Control
             UpdateFromMouse(e.X);
             _dragging = false;
             Capture = false;
+            _bubbleTimer.Stop();
+            _bubbleTimer.Start();
         }
         base.OnMouseUp(e);
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            _bubbleTimer.Dispose();
+        base.Dispose(disposing);
+    }
+
     private void UpdateFromMouse(int x)
     {
-        const int railLeft = 30;
+        const int railLeft = 10;
         int railRight = Width - 10;
         float ratio = Math.Clamp((float)(x - railLeft) / Math.Max(1, railRight - railLeft), 0F, 1F);
         int newValue = _minimum + (int)Math.Round((_maximum - _minimum) * ratio);
@@ -866,74 +963,34 @@ internal sealed class ModernBrightnessSlider : Control
     }
 }
 
-internal sealed class ModernTileButton : Button
+internal sealed class ModernSunButton : Button
 {
     private bool _hovered;
     private bool _pressed;
+    private float _glyphSize = 14F;
 
-    public ModernTileButton()
+    public ModernSunButton()
     {
         FlatStyle = FlatStyle.Flat;
         FlatAppearance.BorderSize = 0;
         ForeColor = Color.White;
         BackColor = Color.Transparent;
-        Font = new Font("Microsoft YaHei UI", 9F);
-        Cursor = Cursors.Hand;
-        SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
-    }
-
-    protected override void OnMouseEnter(EventArgs e) { _hovered = true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { _hovered = false; _pressed = false; Invalidate(); base.OnMouseLeave(e); }
-    protected override void OnMouseDown(MouseEventArgs e) { _pressed = true; Invalidate(); base.OnMouseDown(e); }
-    protected override void OnMouseUp(MouseEventArgs e) { _pressed = false; Invalidate(); base.OnMouseUp(e); }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        Color fill = !Enabled
-            ? Color.FromArgb(49, 49, 49)
-            : _pressed
-                ? Color.FromArgb(75, 75, 75)
-                : _hovered
-                    ? Color.FromArgb(67, 67, 67)
-                    : Color.FromArgb(57, 57, 57);
-
-        using GraphicsPath path = ModernDrawing.RoundedRectangle(
-            new Rectangle(0, 0, Width - 1, Height - 1),
-            6);
-        using var fillBrush = new SolidBrush(fill);
-        using var borderPen = new Pen(Color.FromArgb(78, 78, 78));
-        e.Graphics.FillPath(fillBrush, path);
-        e.Graphics.DrawPath(borderPen, path);
-
-        TextRenderer.DrawText(
-            e.Graphics,
-            Text,
-            Font,
-            ClientRectangle,
-            Enabled ? ForeColor : Color.FromArgb(130, 130, 130),
-            TextFormatFlags.HorizontalCenter |
-            TextFormatFlags.VerticalCenter |
-            TextFormatFlags.SingleLine);
-    }
-}
-
-internal sealed class ModernCloseButton : Button
-{
-    private bool _hovered;
-    private bool _pressed;
-
-    public ModernCloseButton()
-    {
-        Text = "×";
-        FlatStyle = FlatStyle.Flat;
-        FlatAppearance.BorderSize = 0;
-        ForeColor = Color.FromArgb(225, 225, 225);
-        BackColor = Color.Transparent;
-        Font = new Font("Segoe UI", 13F, FontStyle.Regular);
+        Font = new Font("Segoe UI Symbol", 14F);
         Cursor = Cursors.Hand;
         TabStop = false;
-        SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        SetStyle(
+            ControlStyles.UserPaint |
+            ControlStyles.OptimizedDoubleBuffer |
+            ControlStyles.AllPaintingInWmPaint |
+            ControlStyles.SupportsTransparentBackColor,
+            true);
+    }
+
+    [DefaultValue(14F)]
+    public float GlyphSize
+    {
+        get => _glyphSize;
+        set { _glyphSize = value; Invalidate(); }
     }
 
     protected override void OnMouseEnter(EventArgs e) { _hovered = true; Invalidate(); base.OnMouseEnter(e); }
@@ -943,28 +1000,83 @@ internal sealed class ModernCloseButton : Button
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        base.OnPaintBackground(e);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         if (_hovered || _pressed)
         {
             Color fill = _pressed
-                ? Color.FromArgb(82, 82, 82)
-                : Color.FromArgb(66, 66, 66);
-            using GraphicsPath path = ModernDrawing.RoundedRectangle(
-                new Rectangle(0, 0, Width - 1, Height - 1),
-                5);
-            using var brush = new SolidBrush(fill);
-            e.Graphics.FillPath(brush, path);
+                ? Color.FromArgb(78, 78, 78)
+                : Color.FromArgb(64, 64, 64);
+            using GraphicsPath hoverPath = ModernDrawing.RoundedRectangle(
+                new Rectangle(1, 1, Width - 3, Height - 3),
+                6);
+            using var hoverBrush = new SolidBrush(fill);
+            e.Graphics.FillPath(hoverBrush, hoverPath);
         }
 
-        TextRenderer.DrawText(
-            e.Graphics,
-            Text,
-            Font,
-            ClientRectangle,
-            Enabled ? ForeColor : Color.FromArgb(115, 115, 115),
-            TextFormatFlags.HorizontalCenter |
-            TextFormatFlags.VerticalCenter |
-            TextFormatFlags.SingleLine);
+        Color glyphColor = Enabled
+            ? Color.FromArgb(224, 224, 224)
+            : Color.FromArgb(112, 112, 112);
+        float cx = Width / 2F;
+        float cy = Height / 2F;
+        float coreRadius = GlyphSize * 0.18F;
+        float rayStart = GlyphSize * 0.30F;
+        float rayEnd = GlyphSize * 0.48F;
+        using var glyphPen = new Pen(glyphColor, 1.45F)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round
+        };
+        e.Graphics.DrawEllipse(
+            glyphPen,
+            cx - coreRadius,
+            cy - coreRadius,
+            coreRadius * 2F,
+            coreRadius * 2F);
+        for (int i = 0; i < 8; i++)
+        {
+            double angle = i * Math.PI / 4D;
+            e.Graphics.DrawLine(
+                glyphPen,
+                cx + (float)Math.Cos(angle) * rayStart,
+                cy + (float)Math.Sin(angle) * rayStart,
+                cx + (float)Math.Cos(angle) * rayEnd,
+                cy + (float)Math.Sin(angle) * rayEnd);
+        }
+    }
+}
+
+internal static class IconVisuals
+{
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr iconHandle);
+
+    public static Icon CreateGrayscale(Icon source)
+    {
+        using Bitmap bitmap = source.ToBitmap();
+        for (int y = 0; y < bitmap.Height; y++)
+        {
+            for (int x = 0; x < bitmap.Width; x++)
+            {
+                Color pixel = bitmap.GetPixel(x, y);
+                int gray = (int)Math.Round(
+                    pixel.R * 0.2126D +
+                    pixel.G * 0.7152D +
+                    pixel.B * 0.0722D);
+                bitmap.SetPixel(x, y, Color.FromArgb(pixel.A, gray, gray, gray));
+            }
+        }
+
+        IntPtr handle = bitmap.GetHicon();
+        try
+        {
+            using Icon temporary = Icon.FromHandle(handle);
+            return (Icon)temporary.Clone();
+        }
+        finally
+        {
+            DestroyIcon(handle);
+        }
     }
 }
 
@@ -1691,6 +1803,92 @@ internal sealed class MonitorConnectivity : IAsyncDisposable
     {
         _bridge.ConnectionChanged -= Bridge_ConnectionChanged;
         await Task.CompletedTask;
+    }
+}
+
+internal sealed class HdmiMonitorPresence : IDisposable
+{
+    private System.Threading.Timer? _timer;
+    private int _checking;
+    private bool? _lastResult;
+
+    public event Action<bool>? StatusChanged;
+
+    public void Start()
+    {
+        _timer ??= new System.Threading.Timer(
+            _ => CheckNow(),
+            null,
+            TimeSpan.Zero,
+            TimeSpan.FromSeconds(2));
+    }
+
+    private void CheckNow()
+    {
+        if (Interlocked.Exchange(ref _checking, 1) != 0)
+            return;
+
+        try
+        {
+            bool connected = IsSamsungMonitorActive();
+            if (_lastResult == connected)
+                return;
+            _lastResult = connected;
+            StatusChanged?.Invoke(connected);
+        }
+        catch (ManagementException)
+        {
+            // Keep the previous state if Windows monitor instrumentation is busy.
+        }
+        catch (COMException)
+        {
+            // A display topology change can briefly invalidate the WMI query.
+        }
+        finally
+        {
+            Volatile.Write(ref _checking, 0);
+        }
+    }
+
+    private static bool IsSamsungMonitorActive()
+    {
+        using var searcher = new ManagementObjectSearcher(
+            @"root\wmi",
+            "SELECT Active, ManufacturerName FROM WmiMonitorID WHERE Active = TRUE");
+        using ManagementObjectCollection monitors = searcher.Get();
+        foreach (ManagementObject monitor in monitors)
+        {
+            using (monitor)
+            {
+                string manufacturer = DecodeWmiText(monitor["ManufacturerName"] as Array);
+                if (manufacturer.Equals("SAM", StringComparison.OrdinalIgnoreCase) ||
+                    manufacturer.Contains("SAMSUNG", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    private static string DecodeWmiText(Array? values)
+    {
+        if (values is null)
+            return string.Empty;
+
+        var text = new StringBuilder(values.Length);
+        foreach (object? value in values)
+        {
+            char character = (char)Convert.ToUInt16(value);
+            if (character == '\0')
+                break;
+            text.Append(character);
+        }
+        return text.ToString();
+    }
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        _timer = null;
     }
 }
 
