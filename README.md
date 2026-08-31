@@ -22,9 +22,11 @@ A Windows 11 tray controller for compatible Samsung Tizen displays. A companion 
 
 - Windows 11-style popup anchored above the system tray
 - High-contrast flat television icon designed for 16×16 tray rendering
-- Capability-driven backlight and sound controls
-- Absolute hardware backlight control through AVInfo
+- Capability-driven picture, sound, energy, and input controls
+- Absolute hardware backlight, black level, contrast, color, tint, and sharpness controls when exposed by AVInfo
 - Volume and mute controls when TVAudioControl is available
+- Energy-saving mode and ambient-light sensor controls
+- Connected input-source selection with a second-click confirmation and automatic rollback attempt on failure
 - The companion app keeps the HDMI input full-screen through `tizen.tvwindow`
 - Automatically launches the Tizen bridge by application ID when the tray popup is opened
 - Automatically reconnects after a temporary network interruption
@@ -75,9 +77,10 @@ Other Samsung displays may work when their Tizen firmware exposes TVWindow and a
 
 ### Current control policy
 
-- Stable path: backlight, volume, and mute when the corresponding API is readable on the current firmware.
+- Verified on the tested M70B: backlight, black level, contrast, color, tint, sharpness, volume, mute, energy saving, ambient-light sensor, and input source (11 controls).
 - Capability discovery is read-only. It never performs a same-value write or any other test write.
-- Contrast, color, sharpness, energy saving, ambient-light sensor, and input switching remain disabled until each path is independently verified on real hardware.
+- A control is shown only when its getter works on the current firmware and input. Writes are limited to a fixed allowlist with TV-side range/enum validation.
+- Input switching requires a second click, remembers the previous source, and attempts to switch back if the requested change fails or times out.
 - Deliberately excluded: factory reset, picture reset, sound reset, service-menu writes, and arbitrary method execution.
 
 ### Why not use the Windows brightness slider?
@@ -124,9 +127,11 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 
 - 紧贴系统托盘上方的 Windows 11 风格弹窗
 - 专为 16×16 托盘尺寸设计的高对比扁平电视图标
-- 按设备能力动态生成背光和声音控制项
-- 通过 AVInfo 直接控制硬件背光
+- 按设备能力动态生成画面、声音、节能和输入源控制项
+- 在 AVInfo 实际开放时，直接控制硬件背光、黑色级别、对比度、色彩、色调和锐度
 - 在 TVAudioControl 可用时控制音量和静音
+- 控制节能模式与环境光感应
+- 输入源切换采用二次点击确认，失败时自动尝试切回原输入源
 - 配套应用通过 `tizen.tvwindow` 保持 HDMI 电脑画面全屏显示
 - 点击托盘弹窗时，可按应用 ID 自动启动电视端桥接器
 - 局域网临时中断后自动重新连接
@@ -177,9 +182,10 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 
 ### 当前控制策略
 
-- 稳定路径：当前固件可读取相应接口时，启用背光、音量和静音。
+- 已在测试的 M70B 上确认：背光、黑色级别、对比度、色彩、色调、锐度、音量、静音、节能模式、环境光感应和输入源，共 11 项控制能力。
 - 能力发现完全只读，不执行同值写回或其他任何测试写入。
-- 对比度、色彩、锐度、节能、环境光传感器与输入源切换，在逐项完成真机验证前保持禁用。
+- 只有当前固件和输入源下读取成功的项目才会显示；所有写入都受固定白名单、范围与枚举值校验限制。
+- 输入源切换需要二次点击确认，会记住原输入源；切换失败或超时时自动尝试切回。
 - 明确排除：恢复出厂、画面重置、声音重置、Service Menu 写入与任意方法执行。
 
 ### 为什么不用 Windows 原生亮度滑块？
