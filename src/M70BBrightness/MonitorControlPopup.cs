@@ -864,7 +864,7 @@ internal sealed class MonitorSliderSettingRow : MonitorSettingRow
         bool muteWritable)
         : base(key, displayName, writable, requiresConfirmation)
     {
-        Height = 48;
+        Height = 54;
         _slider.Minimum = minimum;
         _slider.Maximum = maximum;
         _slider.Value = value;
@@ -968,15 +968,15 @@ internal sealed class MonitorSliderSettingRow : MonitorSettingRow
         base.OnResize(e);
         if (_minimumButton is not null && _maximumButton is not null)
         {
-            _minimumButton.Bounds = new Rectangle(0, 5, 38, 38);
-            _maximumButton.Bounds = new Rectangle(Math.Max(0, Width - 38), 5, 38, 38);
+            _minimumButton.Bounds = new Rectangle(0, 14, 38, 38);
+            _maximumButton.Bounds = new Rectangle(Math.Max(0, Width - 38), 14, 38, 38);
             _slider.Bounds = new Rectangle(42, 2, Math.Max(20, Width - 84), 44);
         }
         else
         {
             Control? leading = (Control?)_muteButton ?? _leadingGlyph;
             if (leading is not null)
-                leading.Bounds = new Rectangle(0, 5, 38, 38);
+                leading.Bounds = new Rectangle(0, 14, 38, 38);
             _slider.Bounds = new Rectangle(42, 2, Math.Max(20, Width - 46), 44);
         }
     }
