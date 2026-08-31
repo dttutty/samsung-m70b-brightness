@@ -1,10 +1,10 @@
 bin/
 obj/
 publish/
+.buildResult/
 .vs/
 *.user
 *.suo
 *.pdb
 *.zip
 *.exe
-

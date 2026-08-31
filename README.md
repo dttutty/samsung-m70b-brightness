@@ -22,16 +22,14 @@ A Windows 11 tray controller for compatible Samsung Tizen displays. A companion 
 
 - Windows 11-style popup anchored above the system tray
 - High-contrast flat television icon designed for 16×16 tray rendering
-- Capability-driven Picture, Sound, Energy, and Input sections
-- Absolute hardware backlight, contrast, color, and sharpness controls when exposed by AVInfo
-- Volume, mute, energy-saving mode, and ambient-light sensor controls when supported
-- Confirmed switching between input sources actually reported as connected by the display
+- Capability-driven backlight and sound controls
+- Absolute hardware backlight control through AVInfo
+- Volume and mute controls when TVAudioControl is available
 - The companion app keeps the HDMI input full-screen through `tizen.tvwindow`
 - Automatically launches the Tizen bridge by application ID when the tray popup is opened
 - Automatically reconnects after a temporary network interruption
 - Flat sun buttons at the two ends of the backlight slider set its absolute minimum or maximum
 - A slider's target value appears above its thumb only while it is being used
-- Experimental and display-loss-risk controls are clearly separated; input switching requires a second click
 - Live launch, connection, adjustment, and timeout status
 - Clicking outside starts a brief closing transition; the TV bridge stays ready
 - The tray icon turns gray when HDMI or the TV bridge is disconnected
@@ -77,9 +75,9 @@ Other Samsung displays may work when their Tizen firmware exposes TVWindow and a
 
 ### Current control policy
 
-- Stable path: backlight, volume, mute, energy saving, and ambient-light sensor, when the corresponding getter and same-value setter validation succeeds.
-- Experimental picture path: contrast, color, and sharpness appear only after the exact firmware accepts a same-value write and reads it back unchanged.
-- Display-loss-risk path: input source switching is limited to sources reported as connected by `VIDEOSOURCE` and requires a second click.
+- Stable path: backlight, volume, and mute when the corresponding API is readable on the current firmware.
+- Capability discovery is read-only. It never performs a same-value write or any other test write.
+- Contrast, color, sharpness, energy saving, ambient-light sensor, and input switching remain disabled until each path is independently verified on real hardware.
 - Deliberately excluded: factory reset, picture reset, sound reset, service-menu writes, and arbitrary method execution.
 
 ### Why not use the Windows brightness slider?
@@ -99,7 +97,8 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 1. Replace the example PC address in `bridge.js` with the Windows PC's LAN IPv4 address.
 2. Build it as a Samsung TV Web application in Tizen Studio.
 3. Sign it with a Samsung Partner certificate containing the target display's DUID. The hidden `avinfo.color` privilege is not available to a Public certificate.
-4. Install and launch it on the display while Developer Mode is enabled.
+4. Rename the generated package to a short ASCII filename without spaces, such as `M70BBridge.wgt`. Some Samsung TV installers transfer a package with spaces in its filename but then fail during installation.
+5. Install and launch it on the display while Developer Mode is enabled.
 
 ### Security notes
 
@@ -125,16 +124,14 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 
 - 紧贴系统托盘上方的 Windows 11 风格弹窗
 - 专为 16×16 托盘尺寸设计的高对比扁平电视图标
-- 按设备能力动态生成画面、声音、节能和输入源分组
-- 在 AVInfo 支持时直接控制硬件背光、对比度、色彩和锐度
-- 在设备支持时控制音量、静音、节能模式和环境光传感器
-- 只允许切换到显示器报告为已连接的输入源，并要求二次点击确认
+- 按设备能力动态生成背光和声音控制项
+- 通过 AVInfo 直接控制硬件背光
+- 在 TVAudioControl 可用时控制音量和静音
 - 配套应用通过 `tizen.tvwindow` 保持 HDMI 电脑画面全屏显示
 - 点击托盘弹窗时，可按应用 ID 自动启动电视端桥接器
 - 局域网临时中断后自动重新连接
 - 背光滑块两端的扁平太阳按钮可直接设为绝对最小/最大值
 - 只在操作滑块时，才在滑块上方显示目标值
-- 实验画面项与可能丢失画面的项目独立分组，减少误触
 - 实时显示启动、连接、调节和超时状态
 - 点击弹窗外会经过短暂收起过渡，电视端桥接器继续保持就绪
 - HDMI 或电视桥接断开时，托盘图标自动变灰
@@ -180,9 +177,9 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 
 ### 当前控制策略
 
-- 稳定路径：背光、音量、静音、节能与环境光传感器；只有相应 getter 与同值写回检测成功时才启用。
-- 实验画面路径：对比度、色彩、锐度只有在当前固件接受同值写入并正确读回后才会出现。
-- 画面丢失风险路径：输入源只允许选择 `VIDEOSOURCE` 报告为已连接的端口，并要求二次点击。
+- 稳定路径：当前固件可读取相应接口时，启用背光、音量和静音。
+- 能力发现完全只读，不执行同值写回或其他任何测试写入。
+- 对比度、色彩、锐度、节能、环境光传感器与输入源切换，在逐项完成真机验证前保持禁用。
 - 明确排除：恢复出厂、画面重置、声音重置、Service Menu 写入与任意方法执行。
 
 ### 为什么不用 Windows 原生亮度滑块？
@@ -202,7 +199,8 @@ dotnet publish .\src\M70BBrightness\M70BBrightness.csproj -c Release -r win-x64 
 1. 在 `bridge.js` 中把示例电脑地址替换为 Windows 电脑的局域网 IPv4 地址。
 2. 在 Tizen Studio 中按 Samsung TV Web 应用构建。
 3. 使用包含目标显示器 DUID 的 Samsung Partner 证书签名；Public 证书无法使用隐藏的 `avinfo.color` 权限。
-4. 在显示器开启 Developer Mode 后安装并至少启动一次。
+4. 把生成的安装包改成不含空格的短 ASCII 文件名，例如 `M70BBridge.wgt`。部分 Samsung 电视会成功传输带空格文件名的包，却在安装阶段失败。
+5. 在显示器开启 Developer Mode 后安装并至少启动一次。
 
 ### 安全说明
 
