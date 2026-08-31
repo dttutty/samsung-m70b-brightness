@@ -121,12 +121,14 @@ internal sealed class MonitorControlPopup : Form
 
     public async void OpenNearCursor()
     {
+        AppDiagnostics.Log($"open requested; visible={Visible}; connected={_connected}; bridge={_session.IsBridgeConnected}");
         if (_closing)
             CancelClose();
 
         PositionNearTray();
         if (!Visible)
             Show();
+        AppDiagnostics.Log($"show completed; visible={Visible}");
         Activate();
         _mouseButtonsWereDown = Control.MouseButtons != MouseButtons.None;
         _outsideClickArmedAt = DateTime.UtcNow.AddMilliseconds(250);
@@ -217,9 +219,13 @@ internal sealed class MonitorControlPopup : Form
     private async Task EnsureSessionAndSnapshotAsync()
     {
         if (_opening || _closing || !Visible || _connected is not true)
+        {
+            AppDiagnostics.Log($"snapshot skipped; opening={_opening}; closing={_closing}; visible={Visible}; connected={_connected}");
             return;
+        }
 
         _opening = true;
+        AppDiagnostics.Log("snapshot started");
         ShowOverlay(
             "正在读取显示器设置…",
             "GET_CAPABILITIES + GET_SETTINGS",
@@ -234,6 +240,7 @@ internal sealed class MonitorControlPopup : Form
                 return;
 
             BuildSettings(snapshot);
+            AppDiagnostics.Log($"snapshot completed; capabilities={snapshot.Capabilities.Count}; values={snapshot.Values.Count}");
             _snapshotLoaded = true;
             _subtitle.Text = "HDMI 控制已连接";
             _subtitle.ForeColor = FlyoutColors.Connected;
@@ -241,6 +248,7 @@ internal sealed class MonitorControlPopup : Form
         }
         catch (Exception ex)
         {
+            AppDiagnostics.Log($"snapshot failed; {ex.GetType().Name}: {ex.Message}");
             _snapshotLoaded = false;
             if (Visible && !_closing)
                 ShowOffline($"无法读取显示器设置：{ex.Message}");
@@ -521,6 +529,7 @@ internal sealed class MonitorControlPopup : Form
         if (_closing || !Visible)
             return;
 
+        AppDiagnostics.Log("close started");
         _closing = true;
         _outsideClickTimer.Stop();
         ShowOverlay(
@@ -672,14 +681,14 @@ internal abstract class MonitorSettingRow : Control
         Writable = writable;
         RequiresConfirmation = requiresConfirmation;
         Height = 66;
-        BackColor = Color.Transparent;
-        DoubleBuffered = true;
         SetStyle(
             ControlStyles.AllPaintingInWmPaint |
             ControlStyles.OptimizedDoubleBuffer |
             ControlStyles.ResizeRedraw |
             ControlStyles.SupportsTransparentBackColor,
             true);
+        BackColor = Color.Transparent;
+        DoubleBuffered = true;
         Enabled = writable;
         AccessibleName = displayName;
 
@@ -1084,15 +1093,15 @@ internal sealed class MonitorValueSlider : Control
 
     public MonitorValueSlider()
     {
-        DoubleBuffered = true;
-        BackColor = Color.Transparent;
-        Cursor = Cursors.Hand;
         SetStyle(
             ControlStyles.AllPaintingInWmPaint |
             ControlStyles.OptimizedDoubleBuffer |
             ControlStyles.ResizeRedraw |
             ControlStyles.SupportsTransparentBackColor,
             true);
+        DoubleBuffered = true;
+        BackColor = Color.Transparent;
+        Cursor = Cursors.Hand;
         _bubbleTimer.Interval = 750;
         _bubbleTimer.Tick += (_, _) =>
         {
@@ -1266,15 +1275,15 @@ internal sealed class MonitorSunGlyphButton : Control
     public MonitorSunGlyphButton(float glyphSize)
     {
         _glyphSize = glyphSize;
-        BackColor = Color.Transparent;
-        Cursor = Cursors.Hand;
-        TabStop = true;
         SetStyle(
             ControlStyles.UserPaint |
             ControlStyles.OptimizedDoubleBuffer |
             ControlStyles.AllPaintingInWmPaint |
             ControlStyles.SupportsTransparentBackColor,
             true);
+        BackColor = Color.Transparent;
+        Cursor = Cursors.Hand;
+        TabStop = true;
     }
 
     protected override void OnMouseEnter(EventArgs e)

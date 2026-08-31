@@ -14,6 +14,7 @@ namespace M70BPopup;
 
 internal static class Program
 {
+    private const string OpenSignalName = @"Local\M70BBrightness.Open";
     private static Mutex? _singleInstance;
 
     [STAThread]
@@ -27,11 +28,16 @@ internal static class Program
             out bool createdNew);
         if (!createdNew)
         {
-            MessageBox.Show(
-                "Samsung 显示器控制已经在系统托盘中运行。",
-                "Samsung 显示器控制",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            try
+            {
+                using EventWaitHandle existingSignal = EventWaitHandle.OpenExisting(OpenSignalName);
+                existingSignal.Set();
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                // The first instance may still be starting. Its tray icon will
+                // become available normally without opening a duplicate copy.
+            }
             return;
         }
 
@@ -49,7 +55,11 @@ internal static class Program
             string token = LocalState.TryLoadToken() ?? string.Empty;
             bool openAtStartup = args.Any(arg =>
                 string.Equals(arg, "--open", StringComparison.OrdinalIgnoreCase));
-            Application.Run(new TrayContext(host, token, openAtStartup));
+            using var openSignal = new EventWaitHandle(
+                false,
+                EventResetMode.AutoReset,
+                OpenSignalName);
+            Application.Run(new TrayContext(host, token, openAtStartup, openSignal));
         }
         catch (Exception ex)
         {
@@ -126,12 +136,19 @@ internal sealed class TrayContext : ApplicationContext
     private readonly MonitorConnectivity _connectivity;
     private readonly HdmiMonitorPresence _hdmiPresence;
     private readonly BrightnessBridgeServer _bridge;
+    private readonly EventWaitHandle _openSignal;
+    private readonly System.Windows.Forms.Timer _openSignalTimer = new();
     private bool _exiting;
     private bool _bridgeConnected;
     private bool _hdmiConnected;
 
-    public TrayContext(string host, string token, bool openAtStartup = false)
+    public TrayContext(
+        string host,
+        string token,
+        bool openAtStartup,
+        EventWaitHandle openSignal)
     {
+        _openSignal = openSignal;
         _bridge = new BrightnessBridgeServer(host, 8765);
         var session = new SamsungBrightnessSession(host, token, LocalState.LoadBrightness(), _bridge);
         _connectivity = new MonitorConnectivity(_bridge);
@@ -163,6 +180,16 @@ internal sealed class TrayContext : ApplicationContext
         _trayIcon.BalloonTipText = "左键单击电视图标即可打开控制面板。";
         _trayIcon.ShowBalloonTip(3000);
         _ = _popup.Handle;
+        _openSignalTimer.Interval = 100;
+        _openSignalTimer.Tick += (_, _) =>
+        {
+            if (_openSignal.WaitOne(0))
+            {
+                AppDiagnostics.Log("open signal received");
+                _popup.OpenNearCursor();
+            }
+        };
+        _openSignalTimer.Start();
         _connectivity.StatusChanged += TrayConnectivity_StatusChanged;
         _hdmiPresence.StatusChanged += HdmiPresence_StatusChanged;
         _bridge.Start();
@@ -240,6 +267,7 @@ internal sealed class TrayContext : ApplicationContext
             return;
 
         _exiting = true;
+        _openSignalTimer.Stop();
         _connectivity.StatusChanged -= TrayConnectivity_StatusChanged;
         _hdmiPresence.StatusChanged -= HdmiPresence_StatusChanged;
         _hdmiPresence.Dispose();
@@ -251,6 +279,7 @@ internal sealed class TrayContext : ApplicationContext
         _trayIcon.Dispose();
         _offlineIcon.Dispose();
         _appIcon.Dispose();
+        _openSignalTimer.Dispose();
         _popup.Dispose();
         ExitThread();
     }
@@ -1172,18 +1201,6 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         Report(
             "正在让显示器打开 HDMI 亮度桥接器…",
             $"MS_APPLICATION_START — {BridgeAppId}");
-
-        try
-        {
-            await LaunchBridgeAppViaControlAsync();
-            if (await WaitForBridgeAsync(TimeSpan.FromSeconds(10)))
-                return;
-        }
-        catch
-        {
-            // Some older firmware does not expose the application-control channel.
-            // Fall through to the paired Eden remote channel below.
-        }
 
         if (string.IsNullOrWhiteSpace(_token))
         {
@@ -2234,5 +2251,34 @@ internal static class LocalState
     {
         Directory.CreateDirectory(DirectoryPath);
         File.WriteAllText(BrightnessPath, Math.Clamp(value, 0, 50).ToString());
+    }
+}
+
+internal static class AppDiagnostics
+{
+    private static readonly object Gate = new();
+    private static readonly string DirectoryPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "M70BBrightness");
+    private static readonly string LogPath = Path.Combine(DirectoryPath, "diagnostic.log");
+
+    public static void Log(string message)
+    {
+        try
+        {
+            lock (Gate)
+            {
+                Directory.CreateDirectory(DirectoryPath);
+                if (File.Exists(LogPath) && new FileInfo(LogPath).Length > 64 * 1024)
+                    File.WriteAllText(LogPath, "diagnostic log rotated" + Environment.NewLine);
+                File.AppendAllText(
+                    LogPath,
+                    $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+            }
+        }
+        catch
+        {
+            // Diagnostics must never interfere with tray control.
+        }
     }
 }
