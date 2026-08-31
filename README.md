@@ -30,6 +30,19 @@ Verified on Samsung Smart Monitor M7 / M70B (`LS43BM702UNXZA`, 2022 Tizen). Othe
 
 With the companion Tizen app installed, brightness is changed directly without covering HDMI. Without Developer Mode, the app automatically falls back to simulated remote-control keys; the TV settings menu appears briefly while adjusting.
 
+<details>
+<summary><strong>Optional: install the Tizen bridge (Developer Mode)</strong></summary>
+
+1. Install [Tizen Studio](https://developer.samsung.com/smarttv/develop/tools/tizen-studio.html) and, in Package Manager → **Extension SDK**, install **TV Extensions** and **Samsung Certificate Extension**.
+2. On the display, open **Apps → App Settings**, enter `12345`, enable **Developer Mode**, enter the PC's LAN IP address, and reboot the display.
+3. In Tizen Studio, open **Tools → Device Manager → Remote Device Manager**, add the display's IP address, and switch the connection on.
+4. Open **Tools → Certificate Manager** and create **Samsung → TV** author and **Partner** distributor certificates. Include the display's DUID and back up the author certificate.
+5. Use **File → Import → Tizen → Tizen Project** to import `tizen/HDMIBrightnessBridge`, set the PC's LAN IPv4 address in `bridge.js`, then right-click the project and select **Run As → Tizen Web Application**.
+
+Allow the Windows app on private networks when Windows Firewall asks; the bridge connects to TCP port `8765`. If installation is denied, right-click the connected device in Device Manager and select **Permit to install applications**. See Samsung's official [TV device](https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html), [SDK installation](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html), and [certificate](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/creating-certificates.html) guides.
+
+</details>
+
 The pairing token is encrypted with Windows DPAPI and stored locally. No user address or token is included in this repository.
 
 ## Build
@@ -38,7 +51,7 @@ The pairing token is encrypted with Windows DPAPI and stored locally. No user ad
 dotnet publish .\src\SamsungTizenBrightness\SamsungTizenBrightness.csproj -c Release -r win-x64 --self-contained false
 ```
 
-Set the PC's LAN IPv4 address in `tizen/HDMIBrightnessBridge/bridge.js`, then package the TV project in Tizen Studio with a Partner certificate containing the display's DUID. The required AVInfo privilege is unavailable to Public certificates.
+The required AVInfo privilege is unavailable to Public certificates.
 
 > Unofficial community project, not affiliated with Samsung. It uses Samsung interfaces whose compatibility is not publicly guaranteed. Factory reset and service-menu operations are not implemented.
 
