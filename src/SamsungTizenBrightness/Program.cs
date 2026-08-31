@@ -153,7 +153,7 @@ internal sealed class TrayContext : ApplicationContext
         _openSignal = openSignal;
         _bridge = new BrightnessBridgeServer(host, 8765);
         _session = new SamsungBrightnessSession(host, token, LocalState.LoadBrightness(), _bridge);
-        _connectivity = new MonitorConnectivity(_bridge);
+        _connectivity = new MonitorConnectivity(_session);
         _hdmiPresence = new HdmiMonitorPresence();
         _popup = new MonitorControlPopup(_session, _connectivity, host);
         _appIcon = (Icon)(Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application).Clone();
@@ -235,7 +235,7 @@ internal sealed class TrayContext : ApplicationContext
                 ? "Samsung Tizen 亮度 · 已连接"
                 : !_hdmiConnected
                     ? "Samsung Tizen 亮度 · HDMI 未连接"
-                    : "Samsung Tizen 亮度 · 桥接器已断开";
+                    : "Samsung Tizen 亮度 · 控制未连接";
         }
 
         if (_popup.IsHandleCreated && _popup.InvokeRequired)
@@ -1201,6 +1201,13 @@ internal sealed class MonitorSettingsSnapshot
 
 internal sealed class SamsungBrightnessSession : IAsyncDisposable
 {
+    private enum ControlMode
+    {
+        None,
+        Bridge,
+        RemoteFallback
+    }
+
     // These identifiers intentionally keep their legacy values so existing TV
     // installations and remote-control pairing tokens continue to work after
     // the product rename.
@@ -1212,6 +1219,8 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private ClientWebSocket? _socket;
     private int _initialized;
+    private ControlMode _mode;
+    private bool _preferRemoteFallback;
 
     public SamsungBrightnessSession(
         string host,
@@ -1222,18 +1231,32 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         _host = host;
         _token = token;
         _bridge = bridge;
+        _bridge.ConnectionChanged += Bridge_ConnectionChanged;
         CurrentBrightness = Math.Clamp(currentBrightness, 0, 50);
     }
 
     public int CurrentBrightness { get; private set; }
     public bool IsBridgeConnected => _bridge.IsConnected;
-    public bool IsOpen => _bridge.IsConnected && Volatile.Read(ref _initialized) == 1;
+    public bool IsFallbackMode => _mode == ControlMode.RemoteFallback;
+    public bool IsAvailable => _bridge.IsConnected ||
+        _socket?.State == WebSocketState.Open;
+    public bool IsOpen => Volatile.Read(ref _initialized) == 1 &&
+        (_mode switch
+        {
+            ControlMode.Bridge => _bridge.IsConnected,
+            ControlMode.RemoteFallback => _socket?.State == WebSocketState.Open,
+            _ => false
+        });
     public event Action<string, string>? ProgressChanged;
+    public event Action<bool>? AvailabilityChanged;
 
     public async Task WakeBridgeAsync()
     {
         if (_bridge.IsConnected)
+        {
+            _mode = ControlMode.Bridge;
             return;
+        }
 
         Report(
             "正在让显示器打开 HDMI 亮度桥接器…",
@@ -1242,6 +1265,12 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(_token))
             throw new InvalidOperationException(
                 "未保存有效的电视遥控权限。普通点击不会申请权限；请右键托盘图标并选择“重新配对电视遥控权限…”。");
+
+        if (_preferRemoteFallback)
+        {
+            await OpenRemoteFallbackAsync();
+            return;
+        }
 
         Report(
             "正在尝试兼容启动方式…",
@@ -1259,8 +1288,11 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
                 "已保存的电视遥控权限已失效。普通点击不会重新申请；请右键托盘图标并选择“重新配对电视遥控权限…”。");
         }
 
-        if (await WaitForBridgeAsync(TimeSpan.FromSeconds(8)))
+        if (await WaitForBridgeAsync(TimeSpan.FromSeconds(5)))
+        {
+            _mode = ControlMode.Bridge;
             return;
+        }
 
         // Developer-installed Web applications are reported with different app
         // types on different firmware revisions.  Try Eden's other launch mode
@@ -1268,10 +1300,69 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         Report(
             "第一次启动未响应，正在尝试兼容模式…",
             $"LAUNCH_APP {BridgeAppId} — DEEP_LINK");
-        await LaunchBridgeAppAsync("DEEP_LINK");
+        try
+        {
+            await LaunchBridgeAppAsync("DEEP_LINK");
+            if (await WaitForBridgeAsync(TimeSpan.FromSeconds(5)))
+            {
+                _mode = ControlMode.Bridge;
+                return;
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            _token = string.Empty;
+            LocalState.DeleteToken();
+            throw new InvalidOperationException(
+                "已保存的电视遥控权限已失效。请右键托盘图标并选择“重新配对电视遥控权限…”。");
+        }
+        catch (Exception error)
+        {
+            AppDiagnostics.Log($"bridge compatibility launch failed; {error.GetType().Name}: {error.Message}");
+        }
 
-        if (!await WaitForBridgeAsync(TimeSpan.FromSeconds(10)))
-            throw new TimeoutException("显示器没有启动亮度桥接器。");
+        _preferRemoteFallback = true;
+        Report(
+            "未检测到开发者桥接器，正在切换遥控模式…",
+            "KEY_MENU — 模拟电视遥控器");
+        await OpenRemoteFallbackAsync();
+    }
+
+    private async Task OpenRemoteFallbackAsync()
+    {
+        if (_socket?.State == WebSocketState.Open && IsFallbackMode)
+            return;
+
+        AbortSocket();
+        _socket = CreateSocket();
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            Report("正在连接电视遥控器…", "CONNECT — 遥控兼容模式");
+            await _socket.ConnectAsync(CreateUri(_host, _token), timeout.Token);
+            await RequireConnectedAsync(_socket, timeout.Token);
+
+            Report("正在打开电视画面设置…", "KEY_MENU — 打开设置");
+            await ClickAsync(_socket, "KEY_MENU", 650, timeout.Token);
+            await ClickAsync(_socket, "KEY_ENTER", 450, timeout.Token);
+            for (int i = 0; i < 3; i++)
+                await ClickAsync(_socket, "KEY_DOWN", 90, timeout.Token);
+            await ClickAsync(_socket, "KEY_ENTER", 650, timeout.Token);
+            await ClickAsync(_socket, "KEY_ENTER", 500, timeout.Token);
+
+            _mode = ControlMode.RemoteFallback;
+            Volatile.Write(ref _initialized, 1);
+            AvailabilityChanged?.Invoke(true);
+            AppDiagnostics.Log("remote-control brightness fallback opened");
+        }
+        catch
+        {
+            AbortSocket();
+            _mode = ControlMode.None;
+            Volatile.Write(ref _initialized, 0);
+            AvailabilityChanged?.Invoke(false);
+            throw;
+        }
     }
 
     public async Task PairRemoteAsync()
@@ -1374,12 +1465,19 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         await _gate.WaitAsync();
         try
         {
+            if (IsOpen)
+                return;
+
             if (!_bridge.IsConnected)
-                throw new InvalidOperationException("电视亮度桥接器尚未连接。请先在电视上启动桥接应用。");
+            {
+                await OpenRemoteFallbackAsync();
+                return;
+            }
 
             Report("启动中，正在读取显示器背光…", "GET_BACKLIGHT — 读取绝对值");
             CurrentBrightness = await _bridge.GetBrightnessAsync();
             LocalState.SaveBrightness(CurrentBrightness);
+            _mode = ControlMode.Bridge;
             Volatile.Write(ref _initialized, 1);
         }
         finally
@@ -1395,9 +1493,16 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         try
         {
             if (!IsOpen)
-                throw new InvalidOperationException("电视亮度桥接器已断开。");
-            Report("调节中，正在给电视发送命令…", $"SET_BACKLIGHT {target} — 绝对值");
-            CurrentBrightness = await _bridge.SetBrightnessAsync(target);
+                throw new InvalidOperationException("显示器控制连接已断开。");
+            if (IsFallbackMode)
+            {
+                await MoveRemoteFallbackToAsync(target);
+            }
+            else
+            {
+                Report("调节中，正在给电视发送命令…", $"SET_BACKLIGHT {target} — 绝对值");
+                CurrentBrightness = await _bridge.SetBrightnessAsync(target);
+            }
             LocalState.SaveBrightness(CurrentBrightness);
         }
         finally
@@ -1412,7 +1517,22 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         try
         {
             if (!IsOpen)
-                throw new InvalidOperationException("电视亮度桥接器已断开。");
+                throw new InvalidOperationException("显示器控制连接已断开。");
+
+            if (IsFallbackMode)
+            {
+                var capability = new MonitorSettingCapability(
+                    "backlight", "range", 0, 50, Array.Empty<string>(), true);
+                return new MonitorSettingsSnapshot(
+                    new Dictionary<string, MonitorSettingCapability>
+                    {
+                        ["backlight"] = capability
+                    },
+                    new Dictionary<string, object?>
+                    {
+                        ["backlight"] = CurrentBrightness
+                    });
+            }
 
             Report("正在读取显示器可调项…", "GET_CAPABILITIES + GET_SETTINGS");
             try
@@ -1464,12 +1584,16 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         try
         {
             if (!IsOpen)
-                throw new InvalidOperationException("电视亮度桥接器已断开。");
+                throw new InvalidOperationException("显示器控制连接已断开。");
 
             Report("调节中，正在给电视发送命令…", $"SET_SETTING {key} = {value}");
             if (key == "backlight" && TryConvertInt(value, out int legacyBacklight))
             {
-                CurrentBrightness = await _bridge.SetBrightnessAsync(legacyBacklight);
+                legacyBacklight = Math.Clamp(legacyBacklight, 0, 50);
+                if (IsFallbackMode)
+                    await MoveRemoteFallbackToAsync(legacyBacklight);
+                else
+                    CurrentBrightness = await _bridge.SetBrightnessAsync(legacyBacklight);
                 LocalState.SaveBrightness(CurrentBrightness);
                 return CurrentBrightness;
             }
@@ -1507,9 +1631,25 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         try
         {
             if (!IsOpen)
-                throw new InvalidOperationException("电视亮度桥接器已断开。");
-            Report("重置中，正在给电视发送命令…", $"SET_BACKLIGHT {resultingBrightness} — 绝对值");
-            CurrentBrightness = await _bridge.SetBrightnessAsync(resultingBrightness);
+                throw new InvalidOperationException("显示器控制连接已断开。");
+            if (IsFallbackMode)
+            {
+                ClientWebSocket socket = RequireOpenSocket();
+                string key = resultingBrightness == 0 ? "KEY_LEFT" : "KEY_RIGHT";
+                for (int i = 0; i < 50; i++)
+                {
+                    Report(
+                        "重置中，正在模拟电视遥控器…",
+                        $"{key} {i + 1}/50 — 目标 {resultingBrightness}");
+                    await ClickAsync(socket, key, 45, CancellationToken.None);
+                }
+                CurrentBrightness = resultingBrightness;
+            }
+            else
+            {
+                Report("重置中，正在给电视发送命令…", $"SET_BACKLIGHT {resultingBrightness} — 绝对值");
+                CurrentBrightness = await _bridge.SetBrightnessAsync(resultingBrightness);
+            }
             LocalState.SaveBrightness(CurrentBrightness);
         }
         finally
@@ -1520,21 +1660,94 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
 
     public async Task CloseAsync()
     {
-        Report("亮度窗口已收起", "HIDE — 绝对背光通道保持在线");
-        await Task.CompletedTask;
+        await _gate.WaitAsync();
+        try
+        {
+            if (!IsFallbackMode || _socket?.State != WebSocketState.Open)
+            {
+                Report("亮度窗口已收起", "HIDE — 绝对背光通道保持在线");
+                return;
+            }
+
+            Report("正在关闭电视设置菜单…", "KEY_RETURN — 返回 HDMI 画面");
+            for (int i = 0; i < 4; i++)
+                await ClickAsync(_socket, "KEY_RETURN", 350, CancellationToken.None);
+
+            try
+            {
+                await _socket.CloseAsync(
+                    WebSocketCloseStatus.NormalClosure,
+                    "done",
+                    CancellationToken.None);
+            }
+            catch
+            {
+                _socket.Abort();
+            }
+            _socket.Dispose();
+            _socket = null;
+            _mode = ControlMode.None;
+            Volatile.Write(ref _initialized, 0);
+            AvailabilityChanged?.Invoke(_bridge.IsConnected);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task AbortAsync()
     {
         Volatile.Write(ref _initialized, 0);
+        if (IsFallbackMode)
+        {
+            AbortSocket();
+            _mode = ControlMode.None;
+            AvailabilityChanged?.Invoke(_bridge.IsConnected);
+        }
         await Task.CompletedTask;
     }
 
     public async ValueTask DisposeAsync()
     {
+        _bridge.ConnectionChanged -= Bridge_ConnectionChanged;
         AbortSocket();
+        _mode = ControlMode.None;
         await Task.CompletedTask;
         _gate.Dispose();
+    }
+
+    private async Task MoveRemoteFallbackToAsync(int target)
+    {
+        ClientWebSocket socket = RequireOpenSocket();
+        string key = target > CurrentBrightness ? "KEY_RIGHT" : "KEY_LEFT";
+        int total = Math.Abs(target - CurrentBrightness);
+        int sent = 0;
+        while (CurrentBrightness != target)
+        {
+            sent++;
+            Report(
+                "调节中，正在模拟电视遥控器…",
+                $"{key} {sent}/{total} — 目标 {target}");
+            await ClickAsync(socket, key, 70, CancellationToken.None);
+            CurrentBrightness += key == "KEY_RIGHT" ? 1 : -1;
+        }
+    }
+
+    private void Bridge_ConnectionChanged(bool connected)
+    {
+        if (connected)
+        {
+            _preferRemoteFallback = false;
+            if (_mode == ControlMode.None)
+                _mode = ControlMode.Bridge;
+        }
+        else if (_mode == ControlMode.Bridge)
+        {
+            _mode = ControlMode.None;
+            Volatile.Write(ref _initialized, 0);
+        }
+        AvailabilityChanged?.Invoke(IsAvailable);
     }
 
     private ClientWebSocket RequireOpenSocket()
@@ -2110,23 +2323,23 @@ internal sealed class BrightnessBridgeServer : IAsyncDisposable
 
 internal sealed class MonitorConnectivity : IAsyncDisposable
 {
-    private readonly BrightnessBridgeServer _bridge;
+    private readonly SamsungBrightnessSession _session;
     private bool? _lastResult;
 
-    public MonitorConnectivity(BrightnessBridgeServer bridge)
+    public MonitorConnectivity(SamsungBrightnessSession session)
     {
-        _bridge = bridge;
-        _bridge.ConnectionChanged += Bridge_ConnectionChanged;
+        _session = session;
+        _session.AvailabilityChanged += Session_AvailabilityChanged;
     }
 
     public event Action<bool>? StatusChanged;
 
     public void Start()
     {
-        PublishIfChanged(_bridge.IsConnected);
+        PublishIfChanged(_session.IsAvailable);
     }
 
-    private void Bridge_ConnectionChanged(bool connected) => PublishIfChanged(connected);
+    private void Session_AvailabilityChanged(bool connected) => PublishIfChanged(connected);
 
     private void PublishIfChanged(bool connected)
     {
@@ -2138,7 +2351,7 @@ internal sealed class MonitorConnectivity : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _bridge.ConnectionChanged -= Bridge_ConnectionChanged;
+        _session.AvailabilityChanged -= Session_AvailabilityChanged;
         await Task.CompletedTask;
     }
 }

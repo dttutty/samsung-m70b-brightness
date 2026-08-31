@@ -36,6 +36,7 @@ internal sealed class MonitorControlPopup : Form
     private bool _snapshotLoaded;
     private bool _mouseButtonsWereDown;
     private DateTime _outsideClickArmedAt;
+    private Task _remoteMenuCloseTask = Task.CompletedTask;
 
     public MonitorControlPopup(
         SamsungBrightnessSession session,
@@ -125,6 +126,7 @@ internal sealed class MonitorControlPopup : Form
         AppDiagnostics.Log($"open requested; visible={Visible}; connected={_connected}; bridge={_session.IsBridgeConnected}");
         if (_closing)
             CancelClose();
+        await _remoteMenuCloseTask;
 
         PositionNearTray();
         if (!Visible)
@@ -135,7 +137,7 @@ internal sealed class MonitorControlPopup : Form
         _outsideClickArmedAt = DateTime.UtcNow.AddMilliseconds(250);
         _outsideClickTimer.Start();
 
-        if (_connected is true || _session.IsBridgeConnected)
+        if (_connected is true || _session.IsAvailable)
         {
             _connected = true;
             await EnsureSessionAndSnapshotAsync();
@@ -195,13 +197,13 @@ internal sealed class MonitorControlPopup : Form
         _waking = true;
         ShowOverlay(
             "正在启动显示器控制…",
-            "LAUNCH_APP — 启动 HDMI 控制桥接器",
+            "优先启动桥接器；不可用时切换遥控模式",
             busy: true);
         try
         {
             await _session.WakeBridgeAsync();
-            if (!_session.IsBridgeConnected)
-                throw new TimeoutException("电视端桥接器没有连回电脑。");
+            if (!_session.IsAvailable)
+                throw new TimeoutException("无法建立显示器控制连接。");
 
             _connected = true;
             await EnsureSessionAndSnapshotAsync();
@@ -209,7 +211,7 @@ internal sealed class MonitorControlPopup : Form
         catch (Exception ex)
         {
             if (Visible && !_closing)
-                ShowOffline($"无法启动桥接器：{ex.Message}");
+                ShowOffline($"无法连接显示器：{ex.Message}");
         }
         finally
         {
@@ -243,7 +245,9 @@ internal sealed class MonitorControlPopup : Form
             BuildSettings(snapshot);
             AppDiagnostics.Log($"snapshot completed; capabilities={snapshot.Capabilities.Count}; values={snapshot.Values.Count}");
             _snapshotLoaded = true;
-            _subtitle.Text = "HDMI 控制已连接";
+            _subtitle.Text = _session.IsFallbackMode
+                ? "遥控兼容模式已连接"
+                : "HDMI 控制已连接";
             _subtitle.ForeColor = FlyoutColors.Connected;
             HideOverlay();
         }
@@ -494,7 +498,11 @@ internal sealed class MonitorControlPopup : Form
                 return;
 
             _connected = connected;
-            _subtitle.Text = connected ? "HDMI 控制已连接" : "桥接器已断开";
+            _subtitle.Text = connected
+                ? _session.IsFallbackMode
+                    ? "遥控兼容模式已连接"
+                    : "HDMI 控制已连接"
+                : "显示器控制已断开";
             _subtitle.ForeColor = connected ? FlyoutColors.Connected : FlyoutColors.Error;
 
             if (_closing)
@@ -505,7 +513,7 @@ internal sealed class MonitorControlPopup : Form
                 foreach (SettingCommandState state in _commands.Values)
                     state.Row.Enabled = false;
                 if (Visible)
-                    ShowOffline($"等待 {_host} 重新连接本机 :8765");
+                    ShowOffline($"等待重新连接 {_host}");
                 _ = _session.AbortAsync();
             }
             else if (Visible)
@@ -576,7 +584,9 @@ internal sealed class MonitorControlPopup : Form
         _outsideClickTimer.Stop();
         ShowOverlay(
             "正在收起控制窗口…",
-            "HIDE — 保持显示器控制通道在线",
+            _session.IsFallbackMode
+                ? "KEY_RETURN — 恢复电视画面"
+                : "HIDE — 保持显示器控制通道在线",
             busy: true);
         _closeTimer.Start();
     }
@@ -593,8 +603,24 @@ internal sealed class MonitorControlPopup : Form
     {
         _closeTimer.Stop();
         _outsideClickTimer.Stop();
+        bool closeRemoteMenu = _session.IsFallbackMode;
         Hide();
         _closing = false;
+        if (closeRemoteMenu)
+            _remoteMenuCloseTask = CloseRemoteMenuAsync();
+    }
+
+    private async Task CloseRemoteMenuAsync()
+    {
+        try
+        {
+            await _session.CloseAsync();
+        }
+        catch (Exception error)
+        {
+            AppDiagnostics.Log($"could not close remote fallback menu: {error.Message}");
+            await _session.AbortAsync();
+        }
     }
 
     private void PositionNearTray()

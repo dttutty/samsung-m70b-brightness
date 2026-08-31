@@ -18,16 +18,17 @@ Download the Windows x64 build from [GitHub Releases](https://github.com/dttutty
 
 - Windows 11
 - A compatible Samsung Tizen display on the same local network
-- Developer Mode and the companion Tizen app signed with a Samsung Partner certificate
+- Optional: Developer Mode and the companion Tizen app for direct, menu-free control
 
 Verified on Samsung Smart Monitor M7 / M70B (`LS43BM702UNXZA`, 2022 Tizen). Other models may work but are not guaranteed.
 
 ## Setup
 
-1. Install and launch `tizen/HDMIBrightnessBridge` on the display.
-2. Start the Windows app and enter the display's local IP address.
-3. If required, right-click the tray icon, select **Pair TV remote permission…**, and approve the request on the display.
-4. Left-click the tray icon to adjust brightness.
+1. Start the Windows app and enter the display's local IP address.
+2. If required, right-click the tray icon, select **Pair TV remote permission…**, and approve the request on the display.
+3. Left-click the tray icon to adjust brightness.
+
+With the companion Tizen app installed, brightness is changed directly without covering HDMI. Without Developer Mode, the app automatically falls back to simulated remote-control keys; the TV settings menu appears briefly while adjusting.
 
 The pairing token is encrypted with Windows DPAPI and stored locally. No user address or token is included in this repository.
 
