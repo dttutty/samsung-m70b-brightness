@@ -46,7 +46,7 @@ internal static class Program
             string? host = LocalState.TryLoadHost();
             if (host is null)
             {
-                host = HostPrompt.Show();
+                host = ConnectionSetupPrompt.Show();
                 if (host is null)
                     return;
                 LocalState.SaveHost(host);
@@ -72,47 +72,154 @@ internal static class Program
     }
 }
 
-internal static class HostPrompt
+internal static class ConnectionSetupPrompt
 {
-    public static string? Show()
+    private const string SamsungSetupUrl =
+        "https://developer.samsung.com/smarttv/develop/getting-started/using-sdk/tv-device.html";
+
+    public static string? Show(string? currentHost = null)
     {
+        string computerIp = FindLocalIPv4(currentHost) ??
+            "未检测到，请在 Windows 网络设置中查看";
         using var dialog = new Form
         {
-            Text = "连接 Samsung 显示器",
-            ClientSize = new Size(390, 148),
+            Text = "Samsung Tizen 亮度 · 连接设置",
+            ClientSize = new Size(620, 500),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             MaximizeBox = false,
             MinimizeBox = false,
             StartPosition = FormStartPosition.CenterScreen,
             Font = new Font("Microsoft YaHei UI", 9F)
         };
-        var label = new Label
+        var title = new Label
         {
-            Text = "请输入显示器的局域网 IP 地址：",
+            Text = "首次连接 Samsung 显示器",
             AutoSize = true,
-            Location = new Point(18, 18)
+            Font = new Font(dialog.Font.FontFamily, 14F, FontStyle.Bold),
+            Location = new Point(22, 18)
+        };
+        var intro = new Label
+        {
+            Text = "普通遥控兼容模式不需要开发者模式；开发者模式仅用于不遮挡 HDMI 的直接亮度控制。",
+            AutoSize = false,
+            Size = new Size(574, 42),
+            Location = new Point(24, 54)
+        };
+        var hostLabel = new Label
+        {
+            Text = "1. 输入显示器 IP（电视：设置 → 常规 → 网络 → 网络状态 → IP 设置）",
+            AutoSize = true,
+            Font = new Font(dialog.Font, FontStyle.Bold),
+            Location = new Point(24, 102)
         };
         var input = new TextBox
         {
             PlaceholderText = "例如 192.168.1.100",
-            Location = new Point(20, 48),
-            Size = new Size(350, 27)
+            Text = currentHost ?? string.Empty,
+            Location = new Point(25, 130),
+            Size = new Size(570, 27)
+        };
+
+        var developerGroup = new GroupBox
+        {
+            Text = "2. 可选：开启开发者模式并安装电视端桥接器",
+            Location = new Point(20, 174),
+            Size = new Size(580, 225),
+            Font = new Font(dialog.Font, FontStyle.Bold)
+        };
+        var developerInstructions = new Label
+        {
+            Text = "在电视上打开 Apps → App Settings，然后按遥控器的“123/数字键盘”按钮，\n" +
+                   "用屏幕数字键盘输入 12345。开启 Developer Mode 后，输入下面的电脑 IP 并重启电视。\n" +
+                   "电脑还需安装 Tizen Studio、TV Extensions 和 Samsung Certificate Extension，并创建 Partner 证书。",
+            AutoSize = false,
+            Size = new Size(540, 78),
+            Location = new Point(18, 29),
+            Font = new Font(dialog.Font, FontStyle.Regular)
+        };
+        var pcIpLabel = new Label
+        {
+            Text = "需要填入电视的电脑 IP：",
+            AutoSize = true,
+            Location = new Point(18, 112),
+            Font = new Font(dialog.Font, FontStyle.Regular)
+        };
+        var pcIp = new TextBox
+        {
+            Text = computerIp,
+            ReadOnly = true,
+            Location = new Point(21, 136),
+            Size = new Size(405, 27),
+            Font = new Font("Cascadia Mono", 9F)
+        };
+        var copyIp = new Button
+        {
+            Text = "复制 IP",
+            Location = new Point(436, 134),
+            Size = new Size(112, 31),
+            Enabled = IPAddress.TryParse(computerIp, out _)
+        };
+        copyIp.Click += (_, _) =>
+        {
+            Clipboard.SetText(pcIp.Text);
+            copyIp.Text = "已复制";
+        };
+        input.TextChanged += (_, _) =>
+        {
+            string detected = FindLocalIPv4(input.Text.Trim()) ?? computerIp;
+            pcIp.Text = detected;
+            copyIp.Enabled = IPAddress.TryParse(detected, out _);
+            copyIp.Text = "复制 IP";
+        };
+        var toolsLink = new LinkLabel
+        {
+            Text = "打开 Samsung 官方开发者模式、Tizen Studio 与 Device Manager 安装说明",
+            AutoSize = true,
+            Location = new Point(20, 184),
+            Font = new Font(dialog.Font, FontStyle.Regular)
+        };
+        toolsLink.LinkClicked += (_, _) =>
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                    SamsungSetupUrl) { UseShellExecute = true });
+            }
+            catch (Exception error)
+            {
+                MessageBox.Show(
+                    $"无法打开网页：{error.Message}",
+                    dialog.Text,
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        };
+        developerGroup.Controls.AddRange(
+            [developerInstructions, pcIpLabel, pcIp, copyIp, toolsLink]);
+
+        var fallbackNote = new Label
+        {
+            Text = "不配置开发者模式也可以继续：程序会自动改用模拟遥控器方式。首次遥控配对时，请在电视上选择“允许”。",
+            AutoSize = false,
+            Size = new Size(570, 42),
+            Location = new Point(24, 411)
         };
         var ok = new Button
         {
-            Text = "确定",
+            Text = "保存并继续",
             DialogResult = DialogResult.OK,
-            Location = new Point(206, 96),
-            Size = new Size(78, 32)
+            Location = new Point(388, 455),
+            Size = new Size(104, 32)
         };
         var cancel = new Button
         {
             Text = "取消",
             DialogResult = DialogResult.Cancel,
-            Location = new Point(292, 96),
-            Size = new Size(78, 32)
+            Location = new Point(500, 455),
+            Size = new Size(96, 32)
         };
-        dialog.Controls.AddRange([label, input, ok, cancel]);
+        dialog.Controls.AddRange(
+            [title, intro, hostLabel, input, developerGroup, fallbackNote, ok, cancel]);
         dialog.AcceptButton = ok;
         dialog.CancelButton = cancel;
 
@@ -125,10 +232,45 @@ internal static class HostPrompt
         }
         return null;
     }
+
+    private static string? FindLocalIPv4(string? destination = null)
+    {
+        try
+        {
+            using var socket = new Socket(
+                AddressFamily.InterNetwork,
+                SocketType.Dgram,
+                ProtocolType.Udp);
+            string routeTarget = string.IsNullOrWhiteSpace(destination)
+                ? "8.8.8.8"
+                : destination;
+            socket.Connect(routeTarget, 65530);
+            if (socket.LocalEndPoint is IPEndPoint endpoint &&
+                !IPAddress.IsLoopback(endpoint.Address))
+                return endpoint.Address.ToString();
+        }
+        catch (SocketException)
+        {
+        }
+
+        try
+        {
+            return Dns.GetHostAddresses(Dns.GetHostName())
+                .FirstOrDefault(address =>
+                    address.AddressFamily == AddressFamily.InterNetwork &&
+                    !IPAddress.IsLoopback(address))
+                ?.ToString();
+        }
+        catch (SocketException)
+        {
+            return null;
+        }
+    }
 }
 
 internal sealed class TrayContext : ApplicationContext
 {
+    private readonly string _host;
     private readonly SamsungBrightnessSession _session;
     private readonly MonitorControlPopup _popup;
     private readonly NotifyIcon _trayIcon;
@@ -150,6 +292,7 @@ internal sealed class TrayContext : ApplicationContext
         bool openAtStartup,
         EventWaitHandle openSignal)
     {
+        _host = host;
         _openSignal = openSignal;
         _bridge = new BrightnessBridgeServer(host, 8765);
         _session = new SamsungBrightnessSession(host, token, LocalState.LoadBrightness(), _bridge);
@@ -161,6 +304,7 @@ internal sealed class TrayContext : ApplicationContext
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("打开亮度调节", null, (_, _) => _popup.OpenNearCursor());
+        menu.Items.Add("连接与开发者模式设置…", null, (_, _) => ShowConnectionSetup());
         menu.Items.Add("恢复 HDMI 画面", null, async (_, _) => await RecoverDisplayAsync());
         menu.Items.Add("重新配对电视遥控权限…", null, async (_, _) => await PairRemoteAsync());
         menu.Items.Add(new ToolStripSeparator());
@@ -293,6 +437,21 @@ internal sealed class TrayContext : ApplicationContext
         {
             _pairing = false;
         }
+    }
+
+    private void ShowConnectionSetup()
+    {
+        string? updatedHost = ConnectionSetupPrompt.Show(_host);
+        if (updatedHost is null ||
+            updatedHost.Equals(_host, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        LocalState.SaveHost(updatedHost);
+        MessageBox.Show(
+            "新的显示器 IP 已保存。请退出并重新启动程序后生效。",
+            "Samsung Tizen 亮度",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
     }
 
     private async Task ExitAsync()
