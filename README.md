@@ -14,7 +14,7 @@
 
 ## English
 
-A Windows 11 tray controller for compatible Samsung Tizen displays. A companion TV application discovers the controls exposed by the current firmware and input, then presents them in a compact capability-driven flyout while keeping the HDMI picture visible through TVWindow. No on-screen Picture menu navigation is required.
+A Windows 11 tray brightness controller for compatible Samsung Tizen displays. A companion TV application reads and changes the hardware backlight while keeping the HDMI picture visible through TVWindow. No on-screen Picture menu navigation is required.
 
 > This is an unofficial community project and is not affiliated with Samsung. It relies on a local remote-control interface whose compatibility is not publicly guaranteed.
 
@@ -22,11 +22,7 @@ A Windows 11 tray controller for compatible Samsung Tizen displays. A companion 
 
 - Windows 11-style popup anchored above the system tray
 - High-contrast flat television icon designed for 16×16 tray rendering
-- Capability-driven picture, sound, energy, and input controls
-- Absolute hardware backlight, black level, contrast, color, tint, and sharpness controls when exposed by AVInfo
-- Volume and mute controls when TVAudioControl is available
-- Energy-saving mode and ambient-light sensor controls
-- Connected input-source selection with a second-click confirmation and automatic rollback attempt on failure
+- One deliberately focused hardware-backlight control
 - The companion app keeps the HDMI input full-screen through `tizen.tvwindow`
 - Automatically launches the Tizen bridge by application ID when the tray popup is opened
 - Automatically reconnects after a temporary network interruption
@@ -50,7 +46,7 @@ Download the self-contained Windows x64 build from [GitHub Releases](https://git
 4. If remote permission is needed, right-click the tray icon, choose **Pair TV remote permission…**, and approve that one explicit request on the monitor.
 5. Left-click the television icon in the Windows system tray.
 6. If the bridge is not running and a valid token is saved, the Windows app launches it automatically and waits for it to connect. A normal left-click never starts a new pairing request.
-7. Use the controls reported by the connected display. Available rows can change with firmware, picture mode, and input.
+7. Drag the brightness slider, or use the sun buttons for the absolute minimum and maximum.
 8. Click anywhere outside the popup to dismiss it after a brief closing transition.
 
 To stop the background app completely, right-click its tray icon and choose **Exit**.
@@ -73,14 +69,13 @@ No IP address, pairing token, account credential, or brightness history is inclu
 - Model: `LS43BM702UNXZA`
 - Tizen platform: 2022 `22_NIKEL_SMT`
 
-Other Samsung displays may work when their Tizen firmware exposes TVWindow and at least one supported AVInfo/TVAudioControl method. The Windows interface is generated from the capability list returned by the display rather than hard-coded for M70B.
+Other Samsung displays may work when their Tizen firmware exposes TVWindow and the required AVInfo backlight methods. The Windows interface shows the brightness row only when the display reports that capability.
 
 ### Current control policy
 
-- Verified on the tested M70B: backlight, black level, contrast, color, tint, sharpness, volume, mute, energy saving, ambient-light sensor, and input source (11 controls).
+- The Windows flyout intentionally exposes only hardware backlight brightness.
 - Capability discovery is read-only. It never performs a same-value write or any other test write.
-- A control is shown only when its getter works on the current firmware and input. Writes are limited to a fixed allowlist with TV-side range/enum validation.
-- Input switching requires a second click, remembers the previous source, and attempts to switch back if the requested change fails or times out.
+- Brightness is shown only when its getter works on the current firmware and input. Writes are range-validated again on the TV.
 - Deliberately excluded: factory reset, picture reset, sound reset, service-menu writes, and arbitrary method execution.
 
 ### Why not use the Windows brightness slider?
@@ -119,7 +114,7 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 
 ## 简体中文
 
-一个用于兼容 Samsung Tizen 显示设备的 Windows 11 托盘控制器。电视端配套应用会根据当前固件与输入源实际开放的能力生成控制面板，同时通过 TVWindow 保持 HDMI 电脑画面全屏显示，不再需要反复导航 Picture 设置菜单。
+一个用于兼容 Samsung Tizen 显示设备的 Windows 11 托盘亮度控制器。电视端配套应用负责读取和修改硬件背光，同时通过 TVWindow 保持 HDMI 电脑画面全屏显示，不再需要反复导航 Picture 设置菜单。
 
 > 这是非官方社区项目，与 Samsung 无关。项目使用的是未公开保证兼容性的本地遥控接口。
 
@@ -127,11 +122,7 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 
 - 紧贴系统托盘上方的 Windows 11 风格弹窗
 - 专为 16×16 托盘尺寸设计的高对比扁平电视图标
-- 按设备能力动态生成画面、声音、节能和输入源控制项
-- 在 AVInfo 实际开放时，直接控制硬件背光、黑色级别、对比度、色彩、色调和锐度
-- 在 TVAudioControl 可用时控制音量和静音
-- 控制节能模式与环境光感应
-- 输入源切换采用二次点击确认，失败时自动尝试切回原输入源
+- 有意保持专注，只显示硬件背光亮度控制
 - 配套应用通过 `tizen.tvwindow` 保持 HDMI 电脑画面全屏显示
 - 点击托盘弹窗时，可按应用 ID 自动启动电视端桥接器
 - 局域网临时中断后自动重新连接
@@ -155,7 +146,7 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 4. 需要遥控权限时，右键托盘图标，选择“重新配对电视遥控权限…”，然后只在这次明确发起的电视提示中选择“允许”。
 5. 左键单击 Windows 系统托盘中的电视图标。
 6. 如果电视端桥接器没有运行且已保存有效令牌，Windows 程序会自动启动它并等待连接。普通左键点击绝不会发起新的配对请求。
-7. 使用显示器实际报告的控制项；可用项目可能随固件、画面模式和输入源变化。
+7. 拖动亮度滑块，或使用两端的太阳按钮直接设置绝对最小值和最大值。
 8. 点击弹窗外的任意位置，弹窗会经过短暂收起过渡后隐藏。
 
 若要完全结束后台程序，请右键托盘图标并选择“退出”。
@@ -178,14 +169,13 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 - 型号：`LS43BM702UNXZA`
 - Tizen 平台：2022 `22_NIKEL_SMT`
 
-其他 Samsung Tizen 固件只要提供 TVWindow 以及至少一个受支持的 AVInfo/TVAudioControl 方法，也可能兼容。Windows 界面来自显示器返回的能力清单，并非写死为 M70B。
+其他 Samsung Tizen 固件只要提供 TVWindow 和所需的 AVInfo 背光方法，也可能兼容。只有显示器确认提供该能力时，Windows 界面才会显示亮度行。
 
 ### 当前控制策略
 
-- 已在测试的 M70B 上确认：背光、黑色级别、对比度、色彩、色调、锐度、音量、静音、节能模式、环境光感应和输入源，共 11 项控制能力。
+- Windows 弹窗有意只开放硬件背光亮度。
 - 能力发现完全只读，不执行同值写回或其他任何测试写入。
-- 只有当前固件和输入源下读取成功的项目才会显示；所有写入都受固定白名单、范围与枚举值校验限制。
-- 输入源切换需要二次点击确认，会记住原输入源；切换失败或超时时自动尝试切回。
+- 只有当前固件和输入源下成功读取亮度时才显示滑块；写入值会在电视端再次进行范围校验。
 - 明确排除：恢复出厂、画面重置、声音重置、Service Menu 写入与任意方法执行。
 
 ### 为什么不用 Windows 原生亮度滑块？

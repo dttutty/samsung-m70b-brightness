@@ -12,10 +12,10 @@
     <DebugSymbols>false</DebugSymbols>
     <AssemblyName>M70B亮度调节</AssemblyName>
     <ApplicationIcon>assets\m70b-tv.ico</ApplicationIcon>
-    <Version>0.5.5</Version>
+    <Version>0.5.6</Version>
     <AssemblyTitle>Samsung Display Control</AssemblyTitle>
     <Authors>dttutty</Authors>
-    <Description>Windows tray controller for Samsung Tizen picture, sound, energy, and input settings</Description>
+    <Description>Windows tray brightness controller for Samsung Tizen displays</Description>
   </PropertyGroup>
 
   <ItemGroup>

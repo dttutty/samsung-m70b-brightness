@@ -12,7 +12,8 @@ namespace M70BPopup;
 internal sealed class MonitorControlPopup : Form
 {
     private const int FlyoutWidth = 408;
-    private const int FlyoutHeight = 488;
+    private const int FlyoutHeight = 150;
+    private const string BrightnessSettingKey = "backlight";
 
     private readonly SamsungBrightnessSession _session;
     private readonly MonitorConnectivity _connectivity;
@@ -165,20 +166,20 @@ internal sealed class MonitorControlPopup : Form
         _overlay.BackColor = FlyoutColors.Surface;
         _overlay.Visible = true;
 
-        _overlayTitle.Location = new Point(20, 54);
-        _overlayTitle.Size = new Size(FlyoutWidth - 42, 32);
+        _overlayTitle.Location = new Point(20, 5);
+        _overlayTitle.Size = new Size(FlyoutWidth - 42, 27);
         _overlayTitle.ForeColor = Color.White;
         _overlayTitle.BackColor = Color.Transparent;
         _overlayTitle.Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold);
         _overlayTitle.TextAlign = ContentAlignment.MiddleLeft;
 
-        _overlayCommand.Location = new Point(20, 94);
-        _overlayCommand.Size = new Size(FlyoutWidth - 42, 48);
+        _overlayCommand.Location = new Point(20, 31);
+        _overlayCommand.Size = new Size(FlyoutWidth - 42, 35);
         _overlayCommand.ForeColor = FlyoutColors.SecondaryText;
         _overlayCommand.BackColor = Color.Transparent;
         _overlayCommand.Font = new Font("Cascadia Mono", 8.25F);
 
-        _overlayProgress.Location = new Point(20, 158);
+        _overlayProgress.Location = new Point(20, 73);
         _overlayProgress.Size = new Size(FlyoutWidth - 42, 4);
         _overlayProgress.Style = ProgressBarStyle.Marquee;
         _overlayProgress.MarqueeAnimationSpeed = 26;
@@ -271,9 +272,10 @@ internal sealed class MonitorControlPopup : Form
             _commands.Clear();
 
             var grouped = snapshot.Capabilities.Values
+                .Where(capability => capability.Key.Equals(
+                    BrightnessSettingKey,
+                    StringComparison.OrdinalIgnoreCase))
                 .Where(capability => snapshot.Values.ContainsKey(capability.Key))
-                .Where(capability => !SettingPresentation.IsHidden(capability.Key))
-                .Where(capability => !capability.Key.Equals("mute", StringComparison.OrdinalIgnoreCase))
                 .OrderBy(capability => SettingPresentation.SortOrder(capability.Key))
                 .ThenBy(capability => capability.Key, StringComparer.OrdinalIgnoreCase)
                 .GroupBy(capability => SettingPresentation.Section(
@@ -306,7 +308,7 @@ internal sealed class MonitorControlPopup : Form
             {
                 _settingsPanel.Controls.Add(new Label
                 {
-                    Text = "此输入源暂时没有可调项目。",
+                    Text = "当前无法读取亮度。",
                     ForeColor = FlyoutColors.SecondaryText,
                     BackColor = Color.Transparent,
                     AutoSize = false,
