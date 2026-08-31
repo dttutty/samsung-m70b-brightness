@@ -272,6 +272,8 @@ internal sealed class MonitorControlPopup : Form
 
             var grouped = snapshot.Capabilities.Values
                 .Where(capability => snapshot.Values.ContainsKey(capability.Key))
+                .Where(capability => !SettingPresentation.IsHidden(capability.Key))
+                .Where(capability => !capability.Key.Equals("mute", StringComparison.OrdinalIgnoreCase))
                 .OrderBy(capability => SettingPresentation.SortOrder(capability.Key))
                 .ThenBy(capability => capability.Key, StringComparer.OrdinalIgnoreCase)
                 .GroupBy(capability => SettingPresentation.Section(
@@ -281,17 +283,20 @@ internal sealed class MonitorControlPopup : Form
 
             foreach (IGrouping<string, MonitorSettingCapability> group in grouped)
             {
-                AddSectionHeader(group.Key);
+                if (group.Key is not ("画面" or "高级画面" or "高级画质" or "声音"))
+                    AddSectionHeader(group.Key);
                 foreach (MonitorSettingCapability capability in group)
                 {
                     object? value = snapshot.Values[capability.Key];
-                    MonitorSettingRow? row = CreateSettingRow(capability, value);
+                    MonitorSettingRow? row = CreateSettingRow(capability, value, snapshot);
                     if (row is null)
                         continue;
 
                     row.Width = _settingsPanel.ClientSize.Width - 13;
                     row.Margin = new Padding(0, 0, 0, 2);
                     row.ValueRequested += SettingRow_ValueRequested;
+                    if (row is MonitorSliderSettingRow sliderRow)
+                        sliderRow.MuteRequested += SliderRow_MuteRequested;
                     _settingsPanel.Controls.Add(row);
                     _commands[capability.Key] = new SettingCommandState(row);
                 }
@@ -310,6 +315,7 @@ internal sealed class MonitorControlPopup : Form
                     Margin = new Padding(0, 24, 0, 0)
                 });
             }
+            AppDiagnostics.Log($"settings UI built; rows={_commands.Count}");
         }
         finally
         {
@@ -334,7 +340,8 @@ internal sealed class MonitorControlPopup : Form
 
     private MonitorSettingRow? CreateSettingRow(
         MonitorSettingCapability capability,
-        object? value)
+        object? value,
+        MonitorSettingsSnapshot snapshot)
     {
         string displayName = SettingPresentation.DisplayName(capability.Key);
         string kind = capability.Kind.ToLowerInvariant();
@@ -347,6 +354,13 @@ internal sealed class MonitorControlPopup : Form
             int maximum = capability.Maximum ?? Math.Max(100, numericValue);
             if (maximum <= minimum)
                 maximum = minimum + 1;
+            bool isVolume = capability.Key.Equals("volume", StringComparison.OrdinalIgnoreCase);
+            bool muted = isVolume &&
+                snapshot.Values.TryGetValue("mute", out object? muteValue) &&
+                TryConvertBool(muteValue, out bool currentMute) && currentMute;
+            bool muteWritable = isVolume &&
+                snapshot.Capabilities.TryGetValue("mute", out MonitorSettingCapability? muteCapability) &&
+                muteCapability.Writable;
             return new MonitorSliderSettingRow(
                 capability.Key,
                 displayName,
@@ -356,7 +370,10 @@ internal sealed class MonitorControlPopup : Form
                 capability.Writable,
                 capability.RequiresConfirmation ||
                     SettingPresentation.RequiresConfirmation(capability.Key),
-                showSunEndpoints: capability.Key.Equals("backlight", StringComparison.OrdinalIgnoreCase));
+                showSunEndpoints: capability.Key.Equals("backlight", StringComparison.OrdinalIgnoreCase),
+                showMuteButton: isVolume,
+                muted,
+                muteWritable);
         }
 
         if (kind is "toggle" or "bool" or "boolean" || value is bool)
@@ -387,6 +404,29 @@ internal sealed class MonitorControlPopup : Form
         }
 
         return null;
+    }
+
+    private async void SliderRow_MuteRequested(MonitorSliderSettingRow row, bool muted)
+    {
+        if (_connected is not true || !_session.IsOpen)
+            return;
+
+        row.SetPending(true);
+        row.SetError(null);
+        try
+        {
+            object? actual = await _session.SetMonitorSettingAsync("mute", muted);
+            row.ApplyMuteActual(actual);
+        }
+        catch (Exception ex)
+        {
+            row.ApplyMuteActual(!muted);
+            row.SetError(ex.Message);
+        }
+        finally
+        {
+            row.SetPending(false);
+        }
     }
 
     private void SettingRow_ValueRequested(MonitorSettingRow row, object value)
@@ -778,6 +818,20 @@ internal abstract class MonitorSettingRow : Control
         }
     }
 
+    protected void DrawCompactStatus(Graphics graphics)
+    {
+        if (_pending)
+        {
+            using var pendingBrush = new SolidBrush(FlyoutColors.Accent);
+            graphics.FillEllipse(pendingBrush, Width - 9, 4, 5, 5);
+        }
+        else if (_error is not null)
+        {
+            using var errorBrush = new SolidBrush(FlyoutColors.Error);
+            graphics.FillEllipse(errorBrush, Width - 10, 3, 7, 7);
+        }
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -791,6 +845,9 @@ internal sealed class MonitorSliderSettingRow : MonitorSettingRow
     private readonly MonitorValueSlider _slider = new();
     private readonly MonitorSunGlyphButton? _minimumButton;
     private readonly MonitorSunGlyphButton? _maximumButton;
+    private readonly MonitorSettingGlyph? _leadingGlyph;
+    private readonly MonitorSpeakerGlyphButton? _muteButton;
+    private readonly ToolTip _toolTip = new();
     private readonly System.Windows.Forms.Timer _sendTimer = new();
 
     public MonitorSliderSettingRow(
@@ -801,9 +858,13 @@ internal sealed class MonitorSliderSettingRow : MonitorSettingRow
         int value,
         bool writable,
         bool requiresConfirmation,
-        bool showSunEndpoints)
+        bool showSunEndpoints,
+        bool showMuteButton,
+        bool muted,
+        bool muteWritable)
         : base(key, displayName, writable, requiresConfirmation)
     {
+        Height = 48;
         _slider.Minimum = minimum;
         _slider.Maximum = maximum;
         _slider.Value = value;
@@ -818,6 +879,7 @@ internal sealed class MonitorSliderSettingRow : MonitorSettingRow
             RequestValue(_slider.Value);
         };
         Controls.Add(_slider);
+        _toolTip.SetToolTip(_slider, displayName);
 
         if (showSunEndpoints)
         {
@@ -840,6 +902,35 @@ internal sealed class MonitorSliderSettingRow : MonitorSettingRow
                 RequestValue(maximum);
             };
             Controls.AddRange([_minimumButton, _maximumButton]);
+            _toolTip.SetToolTip(_minimumButton, "设为最小亮度");
+            _toolTip.SetToolTip(_maximumButton, "设为最大亮度");
+        }
+        else if (showMuteButton)
+        {
+            _muteButton = new MonitorSpeakerGlyphButton(muted)
+            {
+                AccessibleName = muted ? "取消静音" : "静音",
+                Enabled = muteWritable
+            };
+            _muteButton.Click += (_, _) =>
+            {
+                bool target = !_muteButton.Muted;
+                _muteButton.Muted = target;
+                _muteButton.AccessibleName = target ? "取消静音" : "静音";
+                _toolTip.SetToolTip(_muteButton, target ? "取消静音" : "静音");
+                MuteRequested?.Invoke(this, target);
+            };
+            Controls.Add(_muteButton);
+            _toolTip.SetToolTip(_muteButton, muted ? "取消静音" : "静音");
+        }
+        else
+        {
+            _leadingGlyph = new MonitorSettingGlyph(key)
+            {
+                AccessibleName = displayName
+            };
+            Controls.Add(_leadingGlyph);
+            _toolTip.SetToolTip(_leadingGlyph, displayName);
         }
 
         _sendTimer.Interval = 120;
@@ -850,6 +941,8 @@ internal sealed class MonitorSliderSettingRow : MonitorSettingRow
         };
     }
 
+    public event Action<MonitorSliderSettingRow, bool>? MuteRequested;
+
     public override void ApplyActualValue(object? value)
     {
         if (!TryInt(value, out int actual) || _slider.IsInteracting)
@@ -857,31 +950,50 @@ internal sealed class MonitorSliderSettingRow : MonitorSettingRow
         _slider.Value = actual;
     }
 
+    public void ApplyMuteActual(object? value)
+    {
+        if (_muteButton is null)
+            return;
+        bool muted = value is bool boolean
+            ? boolean
+            : string.Equals(Convert.ToString(value), "ON", StringComparison.OrdinalIgnoreCase) ||
+              Convert.ToString(value) == "1";
+        _muteButton.Muted = muted;
+        _muteButton.AccessibleName = muted ? "取消静音" : "静音";
+        _toolTip.SetToolTip(_muteButton, muted ? "取消静音" : "静音");
+    }
+
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
         if (_minimumButton is not null && _maximumButton is not null)
         {
-            _minimumButton.Bounds = new Rectangle(0, 25, 38, 38);
-            _maximumButton.Bounds = new Rectangle(Math.Max(0, Width - 38), 25, 38, 38);
-            _slider.Bounds = new Rectangle(42, 22, Math.Max(20, Width - 84), 44);
+            _minimumButton.Bounds = new Rectangle(0, 5, 38, 38);
+            _maximumButton.Bounds = new Rectangle(Math.Max(0, Width - 38), 5, 38, 38);
+            _slider.Bounds = new Rectangle(42, 2, Math.Max(20, Width - 84), 44);
         }
         else
         {
-            _slider.Bounds = new Rectangle(2, 22, Math.Max(20, Width - 4), 44);
+            Control? leading = (Control?)_muteButton ?? _leadingGlyph;
+            if (leading is not null)
+                leading.Bounds = new Rectangle(0, 5, 38, 38);
+            _slider.Bounds = new Rectangle(42, 2, Math.Max(20, Width - 46), 44);
         }
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        DrawHeader(e.Graphics);
+        DrawCompactStatus(e.Graphics);
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
+        {
             _sendTimer.Dispose();
+            _toolTip.Dispose();
+        }
         base.Dispose(disposing);
     }
 
@@ -1266,6 +1378,190 @@ internal sealed class MonitorValueSlider : Control
     }
 }
 
+internal sealed class MonitorSettingGlyph : Control
+{
+    private readonly string _key;
+
+    public MonitorSettingGlyph(string key)
+    {
+        _key = key;
+        SetStyle(
+            ControlStyles.UserPaint |
+            ControlStyles.OptimizedDoubleBuffer |
+            ControlStyles.AllPaintingInWmPaint |
+            ControlStyles.SupportsTransparentBackColor,
+            true);
+        BackColor = Color.Transparent;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        Graphics graphics = e.Graphics;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        Color color = Enabled ? FlyoutColors.PrimaryText : FlyoutColors.DisabledText;
+        using var pen = new Pen(color, 1.5F)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round
+        };
+        string key = _key.ToLowerInvariant();
+
+        if (key.Contains("contrast") || key.Equals("brightness", StringComparison.Ordinal))
+        {
+            Rectangle circle = new(10, 10, 18, 18);
+            graphics.DrawEllipse(pen, circle);
+            using var fill = new SolidBrush(Color.FromArgb(120, color));
+            graphics.FillPie(fill, circle, 90, 180);
+        }
+        else if (key.Contains("colorstrength"))
+        {
+            using var dim = new SolidBrush(Color.FromArgb(110, color));
+            graphics.FillEllipse(dim, 8, 14, 12, 12);
+            graphics.FillEllipse(dim, 18, 14, 12, 12);
+            graphics.DrawEllipse(pen, 13, 8, 12, 12);
+        }
+        else if (key.Contains("colortint"))
+        {
+            graphics.DrawEllipse(pen, 8, 11, 16, 16);
+            graphics.DrawEllipse(pen, 15, 11, 16, 16);
+        }
+        else if (key.Contains("sharp"))
+        {
+            graphics.DrawLines(pen,
+            [
+                new Point(7, 25),
+                new Point(14, 17),
+                new Point(19, 22),
+                new Point(30, 10)
+            ]);
+        }
+        else
+        {
+            graphics.DrawLine(pen, 7, 11, 31, 11);
+            graphics.DrawLine(pen, 7, 19, 31, 19);
+            graphics.DrawLine(pen, 7, 27, 31, 27);
+            using var brush = new SolidBrush(color);
+            graphics.FillEllipse(brush, 13, 8, 6, 6);
+            graphics.FillEllipse(brush, 23, 16, 6, 6);
+            graphics.FillEllipse(brush, 10, 24, 6, 6);
+        }
+    }
+}
+
+internal sealed class MonitorSpeakerGlyphButton : Control
+{
+    private bool _muted;
+    private bool _hovered;
+    private bool _pressed;
+
+    public MonitorSpeakerGlyphButton(bool muted)
+    {
+        _muted = muted;
+        SetStyle(
+            ControlStyles.UserPaint |
+            ControlStyles.OptimizedDoubleBuffer |
+            ControlStyles.AllPaintingInWmPaint |
+            ControlStyles.SupportsTransparentBackColor,
+            true);
+        BackColor = Color.Transparent;
+        Cursor = Cursors.Hand;
+        TabStop = true;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool Muted
+    {
+        get => _muted;
+        set
+        {
+            if (_muted == value)
+                return;
+            _muted = value;
+            Invalidate();
+        }
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        _hovered = true;
+        Invalidate();
+        base.OnMouseEnter(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        _hovered = false;
+        _pressed = false;
+        Invalidate();
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left && Enabled)
+            _pressed = true;
+        Invalidate();
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        _pressed = false;
+        Invalidate();
+        base.OnMouseUp(e);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode is Keys.Space or Keys.Enter)
+        {
+            OnClick(EventArgs.Empty);
+            e.Handled = true;
+        }
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        Graphics graphics = e.Graphics;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        if ((_hovered || _pressed) && Enabled)
+        {
+            using GraphicsPath background = MonitorFlyoutDrawing.RoundedRectangle(
+                new Rectangle(1, 1, Width - 3, Height - 3), 6);
+            using var brush = new SolidBrush(_pressed ? FlyoutColors.Pressed : FlyoutColors.Hover);
+            graphics.FillPath(brush, background);
+        }
+
+        Color color = Enabled ? FlyoutColors.PrimaryText : FlyoutColors.DisabledText;
+        using var pen = new Pen(color, 1.55F)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
+        Point[] speaker =
+        [
+            new(8, 16), new(13, 16), new(20, 11),
+            new(20, 27), new(13, 22), new(8, 22)
+        ];
+        graphics.DrawPolygon(pen, speaker);
+
+        if (_muted)
+        {
+            graphics.DrawLine(pen, 24, 15, 31, 23);
+            graphics.DrawLine(pen, 31, 15, 24, 23);
+        }
+        else
+        {
+            graphics.DrawArc(pen, 19, 14, 10, 10, -55, 110);
+            graphics.DrawArc(pen, 18, 10, 17, 18, -50, 100);
+        }
+    }
+}
+
 internal sealed class MonitorSunGlyphButton : Control
 {
     private readonly float _glyphSize;
@@ -1365,6 +1661,13 @@ internal sealed class MonitorSunGlyphButton : Control
 
 internal static class SettingPresentation
 {
+    private static readonly HashSet<string> HiddenSettings = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ecoSensor",
+        "energySaving",
+        "inputSource"
+    };
+
     private static readonly Dictionary<string, string> Names = new(StringComparer.OrdinalIgnoreCase)
     {
         ["backlight"] = "亮度",
@@ -1396,6 +1699,8 @@ internal static class SettingPresentation
 
     public static string DisplayName(string key)
         => Names.TryGetValue(key, out string? name) ? name : SplitIdentifier(key);
+
+    public static bool IsHidden(string key) => HiddenSettings.Contains(key);
 
     public static string Section(string key, bool experimental = false)
     {
