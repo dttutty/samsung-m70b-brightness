@@ -10,10 +10,10 @@
     <SelfContained>false</SelfContained>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
-    <AssemblyName>M70B亮度调节</AssemblyName>
-    <ApplicationIcon>assets\m70b-tv.ico</ApplicationIcon>
-    <Version>0.5.6</Version>
-    <AssemblyTitle>Samsung Display Control</AssemblyTitle>
+    <AssemblyName>Samsung Tizen 亮度</AssemblyName>
+    <ApplicationIcon>assets\samsung-tizen-tv.ico</ApplicationIcon>
+    <Version>0.5.7</Version>
+    <AssemblyTitle>Samsung Tizen Brightness</AssemblyTitle>
     <Authors>dttutty</Authors>
     <Description>Windows tray brightness controller for Samsung Tizen displays</Description>
   </PropertyGroup>
@@ -23,8 +23,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="assets\m70b-tv.png" />
-    <None Include="assets\m70b-tv.ico" />
-    <None Include="assets\m70b-tv.svg" />
+    <None Include="assets\samsung-tizen-tv.png" />
+    <None Include="assets\samsung-tizen-tv.ico" />
+    <None Include="assets\samsung-tizen-tv.svg" />
   </ItemGroup>
 </Project>

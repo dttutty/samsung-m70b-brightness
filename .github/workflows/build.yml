@@ -19,13 +19,12 @@ jobs:
           dotnet-version: 10.0.x
       - name: Publish
         run: >-
-          dotnet publish .\src\M70BBrightness\M70BBrightness.csproj
+          dotnet publish .\src\SamsungTizenBrightness\SamsungTizenBrightness.csproj
           -c Release
           -r win-x64
           --self-contained false
           -o .\publish
       - uses: actions/upload-artifact@v4
         with:
-          name: M70BBrightness-win-x64
-          path: .\publish\M70B亮度调节.exe
-
+          name: Samsung-Tizen-Brightness-win-x64
+          path: .\publish\Samsung Tizen 亮度.exe

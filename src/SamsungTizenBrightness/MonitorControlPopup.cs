@@ -2,7 +2,7 @@ using System.ComponentModel;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 
-namespace M70BPopup;
+namespace SamsungTizenBrightness;
 
 /// <summary>
 /// Capability-driven Windows 11 style monitor-control flyout.  The bridge stays
@@ -46,7 +46,7 @@ internal sealed class MonitorControlPopup : Form
         _connectivity = connectivity;
         _host = host;
 
-        Text = "Samsung 显示器控制";
+        Text = "Samsung Tizen 亮度";
         ClientSize = new Size(FlyoutWidth, FlyoutHeight);
         FormBorderStyle = FormBorderStyle.None;
         MaximizeBox = false;
@@ -61,7 +61,7 @@ internal sealed class MonitorControlPopup : Form
 
         var title = new Label
         {
-            Text = "Samsung 显示器",
+            Text = "Samsung 显示器亮度",
             AutoSize = true,
             BackColor = Color.Transparent,
             ForeColor = Color.White,

@@ -1,7 +1,7 @@
-# Samsung Tizen Display Control
+# Samsung Tizen Brightness
 
 <p align="center">
-  <img src="src/M70BBrightness/assets/m70b-tv.png" width="160" alt="Samsung Tizen Display Control icon">
+  <img src="src/SamsungTizenBrightness/assets/samsung-tizen-tv.png" width="160" alt="Samsung Tizen Brightness icon">
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@ A Windows 11 tray brightness controller for compatible Samsung Tizen displays. A
 
 ### Download
 
-Download the self-contained Windows x64 build from [GitHub Releases](https://github.com/dttutty/samsung-m70b-brightness/releases/latest). No separate .NET installation is required for the self-contained release.
+Download the Windows x64 build from [GitHub Releases](https://github.com/dttutty/samsung-tizen-brightness/releases/latest).
 
 ### Usage
 
@@ -55,7 +55,7 @@ The bridge reports current values whenever the popup opens, including changes ma
 
 ### Local data and privacy
 
-The app stores the following files only under `%LOCALAPPDATA%\M70BBrightness`:
+For upgrade compatibility, the app keeps using its legacy data directory at `%LOCALAPPDATA%\M70BBrightness`:
 
 - `host.txt` — the monitor's local network address
 - `token.dat` — the Tizen pairing token encrypted with Windows DPAPI
@@ -87,7 +87,7 @@ The tested M70B connection does not expose a usable DDC/CI brightness VCP, and W
 Windows and the .NET 10 SDK are required:
 
 ```powershell
-dotnet publish .\src\M70BBrightness\M70BBrightness.csproj -c Release -r win-x64 --self-contained false
+dotnet publish .\src\SamsungTizenBrightness\SamsungTizenBrightness.csproj -c Release -r win-x64 --self-contained false
 ```
 
 The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging it:
@@ -95,7 +95,7 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 1. Replace the example PC address in `bridge.js` with the Windows PC's LAN IPv4 address.
 2. Build it as a Samsung TV Web application in Tizen Studio.
 3. Sign it with a Samsung Partner certificate containing the target display's DUID. The hidden `avinfo.color` privilege is not available to a Public certificate.
-4. Rename the generated package to a short ASCII filename without spaces, such as `M70BBridge.wgt`. Some Samsung TV installers transfer a package with spaces in its filename but then fail during installation.
+4. Rename the generated package to a short ASCII filename without spaces, such as `SamsungBrightnessBridge.wgt`. Some Samsung TV installers transfer a package with spaces in its filename but then fail during installation.
 5. Install and launch it on the display while Developer Mode is enabled.
 
 ### Security notes
@@ -136,7 +136,7 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 
 ### 下载
 
-前往 [GitHub Releases](https://github.com/dttutty/samsung-m70b-brightness/releases/latest) 下载 Windows x64 自包含版本。自包含发布包不需要额外安装 .NET。
+前往 [GitHub Releases](https://github.com/dttutty/samsung-tizen-brightness/releases/latest) 下载 Windows x64 版本。
 
 ### 使用
 
@@ -155,7 +155,7 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 
 ### 本机数据与隐私
 
-程序只在 `%LOCALAPPDATA%\M70BBrightness` 保存以下文件：
+为兼容旧版本升级，程序继续使用原有数据目录 `%LOCALAPPDATA%\M70BBrightness`，其中只保存：
 
 - `host.txt` — 显示器局域网地址
 - `token.dat` — 使用 Windows DPAPI 加密的 Tizen 配对令牌
@@ -187,7 +187,7 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 需要 Windows 和 .NET 10 SDK：
 
 ```powershell
-dotnet publish .\src\M70BBrightness\M70BBrightness.csproj -c Release -r win-x64 --self-contained false
+dotnet publish .\src\SamsungTizenBrightness\SamsungTizenBrightness.csproj -c Release -r win-x64 --self-contained false
 ```
 
 电视端配套项目位于 `tizen/HDMIBrightnessBridge`。打包前需要：
@@ -195,7 +195,7 @@ dotnet publish .\src\M70BBrightness\M70BBrightness.csproj -c Release -r win-x64 
 1. 在 `bridge.js` 中把示例电脑地址替换为 Windows 电脑的局域网 IPv4 地址。
 2. 在 Tizen Studio 中按 Samsung TV Web 应用构建。
 3. 使用包含目标显示器 DUID 的 Samsung Partner 证书签名；Public 证书无法使用隐藏的 `avinfo.color` 权限。
-4. 把生成的安装包改成不含空格的短 ASCII 文件名，例如 `M70BBridge.wgt`。部分 Samsung 电视会成功传输带空格文件名的包，却在安装阶段失败。
+4. 把生成的安装包改成不含空格的短 ASCII 文件名，例如 `SamsungBrightnessBridge.wgt`。部分 Samsung 电视会成功传输带空格文件名的包，却在安装阶段失败。
 5. 在显示器开启 Developer Mode 后安装并至少启动一次。
 
 ### 安全说明

@@ -2,7 +2,7 @@
 <widget xmlns="http://www.w3.org/ns/widgets"
         xmlns:tizen="http://tizen.org/ns/widgets"
         id="http://m70bprobe.local/hdmi-bridge"
-        version="2.2.6"
+        version="2.2.7"
         viewmodes="maximized">
     <tizen:application id="q8YFGkFK1p.M70BProbe" package="q8YFGkFK1p" required_version="2.3"/>
     <content src="index.html"/>
@@ -10,7 +10,7 @@
     <feature name="http://tizen.org/feature/screen.size.normal.1080.1920"/>
     <feature name="http://tizen.org/feature/tv.pip"/>
     <icon src="icon.png"/>
-    <name>M70B HDMI Brightness Bridge</name>
+    <name>Samsung Tizen Brightness Bridge</name>
     <tizen:profile name="tv"/>
     <tizen:setting screen-orientation="landscape"
                    context-menu="disable"

@@ -10,7 +10,7 @@ using System.Management;
 using System.Text;
 using System.Text.Json;
 
-namespace M70BPopup;
+namespace SamsungTizenBrightness;
 
 internal static class Program
 {
@@ -64,8 +64,8 @@ internal static class Program
         catch (Exception ex)
         {
             MessageBox.Show(
-                $"无法启动 Samsung 显示器控制：\n{ex.Message}",
-                "Samsung 显示器控制",
+                $"无法启动 Samsung Tizen 亮度：\n{ex.Message}",
+                "Samsung Tizen 亮度",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
@@ -121,7 +121,7 @@ internal static class HostPrompt
             string host = input.Text.Trim();
             if (IPAddress.TryParse(host, out _) || Uri.CheckHostName(host) != UriHostNameType.Unknown)
                 return host;
-            MessageBox.Show("请输入有效的 IP 地址或主机名。", "Samsung 显示器控制", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show("请输入有效的 IP 地址或主机名。", "Samsung Tizen 亮度", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         return null;
     }
@@ -160,7 +160,7 @@ internal sealed class TrayContext : ApplicationContext
         _offlineIcon = IconVisuals.CreateGrayscale(_appIcon);
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add("打开显示器控制", null, (_, _) => _popup.OpenNearCursor());
+        menu.Items.Add("打开亮度调节", null, (_, _) => _popup.OpenNearCursor());
         menu.Items.Add("恢复 HDMI 画面", null, async (_, _) => await RecoverDisplayAsync());
         menu.Items.Add("重新配对电视遥控权限…", null, async (_, _) => await PairRemoteAsync());
         menu.Items.Add(new ToolStripSeparator());
@@ -168,7 +168,7 @@ internal sealed class TrayContext : ApplicationContext
 
         _trayIcon = new NotifyIcon
         {
-            Text = "Samsung 显示器控制",
+            Text = "Samsung Tizen 亮度",
             Icon = _offlineIcon,
             ContextMenuStrip = menu,
             Visible = true
@@ -179,7 +179,7 @@ internal sealed class TrayContext : ApplicationContext
                 _popup.OpenNearCursor();
         };
 
-        _trayIcon.BalloonTipTitle = "Samsung 显示器控制已启动";
+        _trayIcon.BalloonTipTitle = "Samsung Tizen 亮度已启动";
         _trayIcon.BalloonTipText = "左键单击电视图标即可打开控制面板。";
         _trayIcon.ShowBalloonTip(3000);
         _ = _popup.Handle;
@@ -232,10 +232,10 @@ internal sealed class TrayContext : ApplicationContext
             bool connected = _bridgeConnected && _hdmiConnected;
             _trayIcon.Icon = connected ? _appIcon : _offlineIcon;
             _trayIcon.Text = connected
-                ? "Samsung 显示器控制 · 已连接"
+                ? "Samsung Tizen 亮度 · 已连接"
                 : !_hdmiConnected
-                    ? "Samsung 显示器控制 · HDMI 未连接"
-                    : "Samsung 显示器控制 · 桥接器已断开";
+                    ? "Samsung Tizen 亮度 · HDMI 未连接"
+                    : "Samsung Tizen 亮度 · 桥接器已断开";
         }
 
         if (_popup.IsHandleCreated && _popup.InvokeRequired)
@@ -258,7 +258,7 @@ internal sealed class TrayContext : ApplicationContext
         {
             MessageBox.Show(
                 $"无法恢复 HDMI 画面：\n{error.Message}",
-                "Samsung 显示器控制",
+                "Samsung Tizen 亮度",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
@@ -285,7 +285,7 @@ internal sealed class TrayContext : ApplicationContext
         {
             MessageBox.Show(
                 $"无法完成电视遥控配对：\n{error.Message}",
-                "Samsung 显示器控制",
+                "Samsung Tizen 亮度",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }
@@ -352,7 +352,7 @@ internal sealed class BrightnessPopup : Form
         _connectivity = connectivity;
         _host = host;
 
-        Text = "Samsung M70B 亮度";
+        Text = "Samsung Tizen 亮度";
         ClientSize = new Size(400, 216);
         FormBorderStyle = FormBorderStyle.None;
         MaximizeBox = false;
@@ -1201,6 +1201,9 @@ internal sealed class MonitorSettingsSnapshot
 
 internal sealed class SamsungBrightnessSession : IAsyncDisposable
 {
+    // These identifiers intentionally keep their legacy values so existing TV
+    // installations and remote-control pairing tokens continue to work after
+    // the product rename.
     private const string AppName = "Codex M70B Control";
     private const string BridgeAppId = "q8YFGkFK1p.M70BProbe";
     private readonly string _host;

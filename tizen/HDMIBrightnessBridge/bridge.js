@@ -684,7 +684,7 @@
   function showWindow() {
     clearTimeout(videoWindowTimer);
     videoWindowTimer = setTimeout(function () {
-      setStatus('M70B 没有响应 TVWindow.show；请按返回键退出。');
+      setStatus('显示设备没有响应 TVWindow.show；请按返回键退出。');
       document.getElementById('close').focus();
     }, 8000);
     tizen.tvwindow.show(
@@ -718,7 +718,7 @@
     }
     try {
       if (!tizen.systeminfo.getCapability('http://tizen.org/feature/tv.pip')) {
-        setStatus('M70B 报告不支持 TVWindow/PiP。');
+        setStatus('显示设备报告不支持 TVWindow/PiP。');
         document.getElementById('close').focus();
         return;
       }
