@@ -47,9 +47,9 @@ Download the self-contained Windows x64 build from [GitHub Releases](https://git
 1. Connect the PC and Samsung monitor to the same local network.
 2. Start the app and enter the monitor's local IP address on first launch.
 3. Install the companion Tizen bridge with a Samsung Partner certificate and launch it once.
-4. Approve the remote-control pairing request if the monitor displays one.
+4. If remote permission is needed, right-click the tray icon, choose **Pair TV remote permission…**, and approve that one explicit request on the monitor.
 5. Left-click the television icon in the Windows system tray.
-6. If the bridge is not running, the Windows app launches it automatically and waits for it to connect.
+6. If the bridge is not running and a valid token is saved, the Windows app launches it automatically and waits for it to connect. A normal left-click never starts a new pairing request.
 7. Use the controls reported by the connected display. Available rows can change with firmware, picture mode, and input.
 8. Click anywhere outside the popup to dismiss it after a brief closing transition.
 
@@ -65,7 +65,7 @@ The app stores the following files only under `%LOCALAPPDATA%\M70BBrightness`:
 - `token.dat` — the Tizen pairing token encrypted with Windows DPAPI
 - `brightness.txt` — the most recently confirmed brightness value from 0 to 50
 
-No IP address, pairing token, account credential, or brightness history is included in this repository or release package. To pair again, exit the app, delete this directory, and restart it.
+No IP address, pairing token, account credential, or brightness history is included in this repository or release package. To pair again, use **Pair TV remote permission…** in the tray icon's right-click menu.
 
 ### Verified hardware
 
@@ -152,9 +152,9 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 1. 确保电脑和 Samsung 显示器处于同一局域网。
 2. 启动程序，首次运行时输入显示器的局域网 IP 地址。
 3. 使用 Samsung Partner 证书安装配套 Tizen 桥接应用，并至少手动启动一次。
-4. 如果显示器弹出遥控授权提示，请选择“允许”。
+4. 需要遥控权限时，右键托盘图标，选择“重新配对电视遥控权限…”，然后只在这次明确发起的电视提示中选择“允许”。
 5. 左键单击 Windows 系统托盘中的电视图标。
-6. 如果电视端桥接器没有运行，Windows 程序会自动启动它并等待连接。
+6. 如果电视端桥接器没有运行且已保存有效令牌，Windows 程序会自动启动它并等待连接。普通左键点击绝不会发起新的配对请求。
 7. 使用显示器实际报告的控制项；可用项目可能随固件、画面模式和输入源变化。
 8. 点击弹窗外的任意位置，弹窗会经过短暂收起过渡后隐藏。
 
@@ -170,7 +170,7 @@ The companion TV project is under `tizen/HDMIBrightnessBridge`. Before packaging
 - `token.dat` — 使用 Windows DPAPI 加密的 Tizen 配对令牌
 - `brightness.txt` — 最近一次由显示器确认的亮度值，范围为 0–50
 
-本仓库和发布包不包含任何用户 IP、配对令牌、账户凭据或亮度历史。若需重新配对，请退出程序、删除该目录，然后重新启动。
+本仓库和发布包不包含任何用户 IP、配对令牌、账户凭据或亮度历史。若需重新配对，请使用托盘图标右键菜单中的“重新配对电视遥控权限…”。
 
 ### 已验证设备
 

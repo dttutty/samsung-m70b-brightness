@@ -129,6 +129,7 @@ internal static class HostPrompt
 
 internal sealed class TrayContext : ApplicationContext
 {
+    private readonly SamsungBrightnessSession _session;
     private readonly MonitorControlPopup _popup;
     private readonly NotifyIcon _trayIcon;
     private readonly Icon _appIcon;
@@ -141,6 +142,7 @@ internal sealed class TrayContext : ApplicationContext
     private bool _exiting;
     private bool _bridgeConnected;
     private bool _hdmiConnected;
+    private bool _pairing;
 
     public TrayContext(
         string host,
@@ -150,16 +152,17 @@ internal sealed class TrayContext : ApplicationContext
     {
         _openSignal = openSignal;
         _bridge = new BrightnessBridgeServer(host, 8765);
-        var session = new SamsungBrightnessSession(host, token, LocalState.LoadBrightness(), _bridge);
+        _session = new SamsungBrightnessSession(host, token, LocalState.LoadBrightness(), _bridge);
         _connectivity = new MonitorConnectivity(_bridge);
         _hdmiPresence = new HdmiMonitorPresence();
-        _popup = new MonitorControlPopup(session, _connectivity, host);
+        _popup = new MonitorControlPopup(_session, _connectivity, host);
         _appIcon = (Icon)(Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application).Clone();
         _offlineIcon = IconVisuals.CreateGrayscale(_appIcon);
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("打开显示器控制", null, (_, _) => _popup.OpenNearCursor());
         menu.Items.Add("恢复 HDMI 画面", null, async (_, _) => await RecoverDisplayAsync());
+        menu.Items.Add("重新配对电视遥控权限…", null, async (_, _) => await PairRemoteAsync());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("退出", null, async (_, _) => await ExitAsync());
 
@@ -258,6 +261,37 @@ internal sealed class TrayContext : ApplicationContext
                 "Samsung 显示器控制",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
+        }
+    }
+
+    private async Task PairRemoteAsync()
+    {
+        if (_pairing || _exiting)
+            return;
+
+        _pairing = true;
+        _trayIcon.BalloonTipTitle = "正在重新配对电视";
+        _trayIcon.BalloonTipText = "请只在电视这一次弹出的授权提示中选择“允许”。";
+        _trayIcon.ShowBalloonTip(5000);
+        try
+        {
+            await _session.PairRemoteAsync();
+            _trayIcon.BalloonTipTitle = "配对完成";
+            _trayIcon.BalloonTipText = "授权令牌已保存，以后普通点击不会再次申请权限。";
+            _trayIcon.ShowBalloonTip(4000);
+            _popup.OpenNearCursor();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(
+                $"无法完成电视遥控配对：\n{error.Message}",
+                "Samsung 显示器控制",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _pairing = false;
         }
     }
 
@@ -1203,13 +1237,8 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
             $"MS_APPLICATION_START — {BridgeAppId}");
 
         if (string.IsNullOrWhiteSpace(_token))
-        {
-            Report(
-                "请在显示器上允许电脑遥控，然后稍候…",
-                "PAIR_REMOTE — 等待电视授权");
-            _token = await PairAsync(_host);
-            LocalState.SaveToken(_token);
-        }
+            throw new InvalidOperationException(
+                "未保存有效的电视遥控权限。普通点击不会申请权限；请右键托盘图标并选择“重新配对电视遥控权限…”。");
 
         Report(
             "正在尝试兼容启动方式…",
@@ -1221,12 +1250,10 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
         }
         catch (UnauthorizedAccessException)
         {
-            Report(
-                "请在显示器上允许电脑遥控，然后稍候…",
-                "PAIR_REMOTE — 等待电视授权");
-            _token = await PairAsync(_host);
-            LocalState.SaveToken(_token);
-            await LaunchBridgeAppAsync("NATIVE_LAUNCH");
+            _token = string.Empty;
+            LocalState.DeleteToken();
+            throw new InvalidOperationException(
+                "已保存的电视遥控权限已失效。普通点击不会重新申请；请右键托盘图标并选择“重新配对电视遥控权限…”。");
         }
 
         if (await WaitForBridgeAsync(TimeSpan.FromSeconds(8)))
@@ -1242,6 +1269,17 @@ internal sealed class SamsungBrightnessSession : IAsyncDisposable
 
         if (!await WaitForBridgeAsync(TimeSpan.FromSeconds(10)))
             throw new TimeoutException("显示器没有启动亮度桥接器。");
+    }
+
+    public async Task PairRemoteAsync()
+    {
+        Report(
+            "请在显示器上允许电脑遥控，然后稍候…",
+            "PAIR_REMOTE — 用户主动重新配对");
+        string token = await PairAsync(_host);
+        _token = token;
+        LocalState.SaveToken(token);
+        AppDiagnostics.Log("remote pairing completed and token saved");
     }
 
     public static async Task<string> PairAsync(string host)
@@ -2234,6 +2272,23 @@ internal static class LocalState
         byte[] plaintext = Encoding.UTF8.GetBytes(token);
         byte[] encrypted = ProtectedData.Protect(plaintext, Entropy, DataProtectionScope.CurrentUser);
         File.WriteAllText(TokenPath, Convert.ToBase64String(encrypted));
+    }
+
+    public static void DeleteToken()
+    {
+        try
+        {
+            if (File.Exists(TokenPath))
+                File.Delete(TokenPath);
+        }
+        catch (IOException error)
+        {
+            AppDiagnostics.Log($"could not delete invalid remote token: {error.Message}");
+        }
+        catch (UnauthorizedAccessException error)
+        {
+            AppDiagnostics.Log($"could not delete invalid remote token: {error.Message}");
+        }
     }
 
     public static int LoadBrightness()
